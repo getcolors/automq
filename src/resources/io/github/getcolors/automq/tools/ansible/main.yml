@@ -121,6 +121,7 @@
         - { src: format.sh, dest: /usr/local/bin/automq-format }
         - { src: acl.sh, dest: /usr/local/bin/automq-acl }
         - { src: cert.sh, dest: /usr/local/bin/automq-cert }
+        - { src: scram.sh, dest: /usr/local/bin/automq-scram }
         - { src: cert-deploy.sh, dest: /usr/local/bin/automq-cert-deploy }
         - { src: smoke.sh, dest: /usr/local/bin/automq-smoke }
         - { src: status.sh, dest: /usr/local/bin/automq-status }
@@ -154,20 +155,71 @@
 
     # --------------------------------------------------------------- secrets
 
-    - name: Generate the cluster secrets on the issuer node
-      ansible.builtin.command: /usr/local/bin/automq-secrets
-      args:
-        creates: /etc/automq/secrets/secrets.env
-      when: automq_cert_issuer | bool
+    # Which node already holds the bundle decides everything below. Generating
+    # on node 0 unconditionally is a data-loss bug in disguise: rebuild node 0
+    # while the cluster and its storage survive, and it mints fresh passwords
+    # and SCRAM salts and pushes them over the working ones — while the
+    # credentials actually in the metadata log stay as they were.
+    - name: Probe whether this cluster has ever been initialized
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-state
+      register: genesis_probe
+      changed_when: false
       run_once: true
       delegate_to: "{{ groups['automq'] | first }}"
 
-    - name: Read the cluster secrets
+    - name: Look for an existing secret bundle
+      ansible.builtin.stat:
+        path: /etc/automq/secrets/secrets.env
+      register: secrets_stat
+
+    - name: Default the secret source to the first node
+      ansible.builtin.set_fact:
+        secrets_source: "{{ ansible_play_hosts | first }}"
+      run_once: true
+
+    - name: Prefer a node that already holds the bundle
+      ansible.builtin.set_fact:
+        secrets_source: "{{ item }}"
+      loop: "{{ ansible_play_hosts }}"
+      when: hostvars[item].secrets_stat.stat.exists | default(false)
+      run_once: true
+
+    - name: Note whether any node holds the bundle
+      ansible.builtin.set_fact:
+        secrets_present: >-
+          {{ ansible_play_hosts
+             | map('extract', hostvars, ['secrets_stat', 'stat', 'exists'])
+             | select | list | length > 0 }}
+      run_once: true
+
+    - name: Refuse to mint new secrets for a cluster that already exists
+      ansible.builtin.fail:
+        msg: >-
+          This cluster has formatted nodes but no host carries
+          /etc/automq/secrets/secrets.env. Generating a new bundle would push
+          passwords and SCRAM salts that disagree with the credentials already
+          in the metadata log, and there is no authenticated path to repair
+          that. Restore the bundle from a surviving node or a backup before
+          converging again.
+      when:
+        - not (secrets_present | bool)
+        - (genesis_probe.stdout | from_json).initialized | bool
+      run_once: true
+
+    - name: Generate the cluster secrets, only at genesis
+      ansible.builtin.command: /usr/local/bin/automq-secrets
+      args:
+        creates: /etc/automq/secrets/secrets.env
+      when: not (secrets_present | bool)
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Read the cluster secrets from whichever node holds them
       ansible.builtin.slurp:
         src: /etc/automq/secrets/secrets.env
       register: cluster_secrets
       run_once: true
-      delegate_to: "{{ groups['automq'] | first }}"
+      delegate_to: "{{ secrets_source }}"
       no_log: true
 
     # Distributed over the control connection rather than regenerated: the
@@ -205,7 +257,8 @@
 
     - name: Substitute the secrets into the configuration
       ansible.builtin.command: /usr/local/bin/automq-render-config
-      changed_when: true
+      register: render_config
+      changed_when: "'config: changed' in render_config.stdout"
 
     - name: Render the Compose file
       ansible.builtin.template:
@@ -258,7 +311,7 @@
       run_once: true
       delegate_to: "{{ groups['automq'] | first }}"
       register: cert_run
-      changed_when: "'published' in cert_run.stdout"
+      changed_when: "'cert: published' in cert_run.stdout"
 
     - name: Install the certificate and build the keystore
       ansible.builtin.command: >-
@@ -287,6 +340,12 @@
       ansible.builtin.command: >-
         /usr/local/bin/automq-format {{ automq_node_id }}
         {{ (not (genesis_state.stdout | from_json).initialized) | lower }}
+      # The disk-loss recovery override is documented as a one-run environment
+      # variable, so it has to reach the remote command — the play environment
+      # carries only the storage credentials, and without this line setting it
+      # on the workstation changes nothing at all.
+      environment:
+        AUTOMQ_ALLOW_REFORMAT: "{{ lookup('env', 'AUTOMQ_ALLOW_REFORMAT') | default('false', true) }}"
       register: format_run
       changed_when: "'format: complete' in format_run.stdout"
 
@@ -306,6 +365,36 @@
       register: compose_up
       changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr"
 
+    # `docker compose up -d` does NOT recreate a container because the contents
+    # of a bind-mounted file changed — Compose compares its own service
+    # definition, not the bytes behind the mount. Without this, a listener,
+    # ACL, storage, heap or retention edit renders cleanly, reports a
+    # successful converge, and the JVM keeps running the old configuration.
+    #
+    # throttle: 1 because these are combined broker+controller nodes: restarting
+    # them together destroys the KRaft majority. Ansible is a single
+    # orchestrator, so ordering here is real; the object-store lease exists for
+    # the timer path, where nothing coordinates the nodes.
+    - name: Restart brokers whose configuration changed
+      ansible.builtin.command:
+        cmd: docker restart automq
+      when: render_config.changed and not compose_up.changed
+      throttle: 1
+      changed_when: true
+
+    - name: Wait for the broker to answer after a configuration change
+      ansible.builtin.command: >-
+        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
+        --bootstrap-server {{ automq_vpc_ip }}:<{ internal-port }>
+        --command-config /etc/automq/admin.properties
+      register: config_restart_ready
+      until: config_restart_ready.rc == 0
+      retries: 40
+      delay: 15
+      changed_when: false
+      when: render_config.changed and not compose_up.changed
+      throttle: 1
+
     - name: Wait for the broker to answer
       ansible.builtin.command: >-
         docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
@@ -318,6 +407,19 @@
       changed_when: false
 
     # ----------------------------------------------------------------- gates
+
+    # The plan promised drift detection by AUTHENTICATING with each desired
+    # credential, because a SCRAM credential cannot be compared any other way —
+    # kafka-configs --describe exposes iterations and salt, never anything
+    # comparable to a plaintext. Genesis bootstrap alone does not cover a
+    # rotated password or a principal renamed in desired state.
+    - name: Reconcile the SCRAM credentials
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-scram <{ bootstrap-internal }>
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: scram_reconcile
+      changed_when: "'scram: upserted' in scram_reconcile.stdout"
 
     - name: Apply the client ACLs
       ansible.builtin.command: >-
@@ -346,7 +448,8 @@
       ansible.builtin.command: /usr/local/bin/automq-store ready
       run_once: true
       delegate_to: "{{ groups['automq'] | first }}"
-      changed_when: true
+      register: ready_mark
+      changed_when: "'ready: written' in ready_mark.stdout"
 
     # --------------------------------------------------------------- timers
 

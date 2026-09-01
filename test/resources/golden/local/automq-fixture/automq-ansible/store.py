@@ -184,6 +184,25 @@ def cmd_adopt(args):
         print(json.dumps({"state": "adopted", "txn": states["data"][1]["txn"]}))
         return
 
+    # One side ready, the other still init. `ready` is written to the two
+    # buckets in sequence, so a process that dies between them leaves exactly
+    # this state — and treating it as fatal would wedge adoption permanently
+    # over a partial write of a marker, not over any real disagreement. The
+    # transaction ids must still match; that is what proves it is the same
+    # adoption rather than two.
+    if pair in (("ready", "init"), ("init", "ready")):
+        if states["data"][1]["txn"] != states["ops"][1]["txn"]:
+            die("refusing to adopt: one bucket is ready and the other carries "
+                "an init marker from a different transaction. Two deployments "
+                "have touched this storage; resolve by hand.")
+        done_role = "data" if pair[0] == "ready" else "ops"
+        todo_role = "ops" if done_role == "data" else "data"
+        init = states[todo_role][1]
+        put_json(s3, states[todo_role][2], key(args.profile, "colors-ready"),
+                 dict(init, ready_at=int(time.time())))
+        print(json.dumps({"state": "ready-completed", "txn": init["txn"]}))
+        return
+
     if pair == ("init", "init"):
         if states["data"][1]["txn"] != states["ops"][1]["txn"]:
             die(
@@ -251,15 +270,23 @@ def cmd_adopt(args):
 
 
 def cmd_ready(args):
-    """Write the ready markers. Called once, after the smoke gates pass."""
+    """Write the ready markers. Called once, after the smoke gates pass.
+
+    Rewriting a marker that already exists would report a change on every
+    converge and make the deployment's own idempotency claim unfalsifiable.
+    """
     s3 = client(args.endpoint, args.region)
+    wrote = False
     for role, bucket in (("data", args.data_bucket), ("ops", args.ops_bucket)):
         init = get_json(s3, bucket, key(args.profile, "colors-init"))
         if not init:
             die(f"refusing to mark {bucket} ready: it carries no init marker.")
-        payload = dict(init, ready_at=int(time.time()))
-        put_json(s3, bucket, key(args.profile, "colors-ready"), payload)
-    print("ready")
+        if get_json(s3, bucket, key(args.profile, "colors-ready")):
+            continue
+        put_json(s3, bucket, key(args.profile, "colors-ready"),
+                 dict(init, ready_at=int(time.time())))
+        wrote = True
+    print("ready: written" if wrote else "ready: already marked")
 
 
 # -------------------------------------------------------------------- genesis
@@ -397,40 +424,94 @@ def cmd_tls_fetch(args):
 # ---------------------------------------------------------------------- lease
 
 
+def _etag(s3, bucket, k):
+    try:
+        return s3.head_object(Bucket=bucket, Key=k).get("ETag")
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+
+
+def _put_if_match(s3, bucket, k, payload, etag):
+    """Replace an object only if it still has the ETag we read."""
+    def handler(request, **_kwargs):
+        request.headers.add_header("If-Match", etag)
+
+    s3.meta.events.register("before-sign.s3.PutObject", handler)
+    try:
+        s3.put_object(
+            Bucket=bucket, Key=k, ContentType="application/json",
+            Body=json.dumps(payload, sort_keys=True, indent=2).encode(),
+        )
+        return True
+    except ClientError as e:
+        status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if e.response["Error"]["Code"] in ("PreconditionFailed", "ConditionalRequestConflict") or status == 412:
+            return False
+        raise
+    finally:
+        s3.meta.events.unregister("before-sign.s3.PutObject", handler)
+
+
 def cmd_lease_acquire(args):
     """Take the rolling-restart lease, or report that someone else holds it.
 
     Independent timers on three nodes observe a new certificate at the same
     moment, and each would pass its own local quorum check before any peer had
     gone down: a local check cannot order independent actors. This is what
-    orders them. The TTL exists so a node that dies holding the lease does not
-    wedge the cluster forever.
+    orders them. These are combined broker+controller nodes, so a simultaneous
+    restart destroys the majority.
+
+    Every transition is conditional. Taking a free lease is a conditional
+    create; taking an EXPIRED lease is a conditional replace against the exact
+    ETag that was read. An unconditional overwrite of an expired lease lets two
+    contenders both read it, both write, and both believe they hold it — which
+    is precisely the simultaneous restart the lease exists to prevent.
     """
     s3 = client(args.endpoint, args.region)
     k = key(args.profile, "lease", f"{args.name}.json")
     now = int(time.time())
-    held = get_json(s3, args.ops_bucket, k)
-    if held and held.get("holder") != args.holder and now - held.get("at", 0) < args.ttl:
+    payload = {"schema": SCHEMA, "holder": args.holder, "at": now, "ttl": args.ttl}
+
+    etag = _etag(s3, args.ops_bucket, k)
+    if etag is None:
+        acquired = put_json(s3, args.ops_bucket, k, payload, if_absent=True)
+        print(json.dumps({"acquired": acquired,
+                          "holder": args.holder if acquired else "raced"}))
+        return
+
+    held = get_json(s3, args.ops_bucket, k) or {}
+    mine = held.get("holder") == args.holder
+    expired = now - held.get("at", 0) >= held.get("ttl", args.ttl)
+    if not mine and not expired:
         print(json.dumps({"acquired": False, "holder": held.get("holder")}))
         return
-    payload = {"schema": SCHEMA, "holder": args.holder, "at": now, "ttl": args.ttl}
-    if held is None:
-        if not put_json(s3, args.ops_bucket, k, payload, if_absent=True):
-            print(json.dumps({"acquired": False, "holder": "raced"}))
-            return
-    else:
-        put_json(s3, args.ops_bucket, k, payload)
-    print(json.dumps({"acquired": True, "holder": args.holder}))
+
+    # Conditional on the ETag we just read: a competitor that renewed or took
+    # the lease in between invalidates it and we lose the race cleanly.
+    won = _put_if_match(s3, args.ops_bucket, k, payload, etag)
+    print(json.dumps({"acquired": won, "holder": args.holder if won else "raced"}))
 
 
 def cmd_lease_release(args):
+    """Release the lease, but only if we still hold it.
+
+    An unconditional delete lets a node whose lease expired — while it was
+    still restarting — delete its successor's lease on the way out, handing a
+    third node a lease that is already in use.
+    """
     s3 = client(args.endpoint, args.region)
     k = key(args.profile, "lease", f"{args.name}.json")
+    held = get_json(s3, args.ops_bucket, k) or {}
+    if held.get("holder") != args.holder:
+        print(json.dumps({"released": False, "holder": held.get("holder")}))
+        return
     try:
         s3.delete_object(Bucket=args.ops_bucket, Key=k)
     except ClientError:
         pass
-    print("released")
+    print(json.dumps({"released": True}))
 
 
 def main():
@@ -477,6 +558,7 @@ def main():
 
     s = sub.add_parser("lease-release")
     s.add_argument("--name", default="restart")
+    s.add_argument("--holder", required=True)
     s.set_defaults(fn=cmd_lease_release)
 
     args = p.parse_args()

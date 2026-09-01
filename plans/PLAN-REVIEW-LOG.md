@@ -386,3 +386,102 @@ the user has made.
 
 Post-build cross-inspection (inspect=on) is still owed: a FRESH Codex session
 reviews the finished diff against this plan.
+
+## Post-build inspection — Codex (fresh session, cold read)
+
+- **[P1] Expired restart leases can be acquired by multiple nodes.** [store.py:412](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/store.py:412) unconditionally overwrites an existing expired lease. Two contenders can both read the expired object, overwrite it, and each report `acquired: true`; additionally, [store.py:426](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/store.py:426) lets an expired holder delete its successor’s lease. This defeats the serialization protecting the three combined broker/controllers from simultaneous restart. **Fix:** replace/renew and release leases conditionally against the observed ETag or holder-specific token.
+
+- **[P1] A partial `ready` operation permanently wedges adoption.** [store.py:253](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/store.py:253) writes the data and ops ready markers sequentially. If the second write fails, the next converge sees `(ready, init)`, which [store.py:244](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/store.py:244) rejects with no resume path. **Fix:** make matching `(ready, init)`/`(init, ready)` resumable by validating the transaction and completing the missing ready marker.
+
+- **[P1] Replacing node 0 regenerates the cluster’s static credentials.** [main.yml:157](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:157) uses only node 0’s local `secrets.env` as the create-once authority. If that host is rebuilt while the cluster and R2 state survive, it generates new broker, admin, client, controller, and keystore passwords and distributes them to the surviving nodes. The stored SCRAM credentials remain unchanged, and the replacement controller’s PLAIN password initially differs from its running peers. **Fix:** recover the existing secret bundle from a surviving node before generation, and refuse generation when durable format records already exist.
+
+- **[P1] The promised one-run disk-loss recovery authorization cannot reach the host.** [format.sh:61](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/format.sh:61) checks `AUTOMQ_ALLOW_REFORMAT`, but the play-level environment at [main.yml:25](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:25) passes only the R2 credentials. Setting the documented variable on the workstation therefore still leaves the remote command refusing recovery. **Fix:** explicitly pass a validated `AUTOMQ_ALLOW_REFORMAT` lookup to the format task’s environment.
+
+- **[P1] Metadata identity validation accepts missing identity fields.** [format.sh:43](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/format.sh:43) rejects only non-empty, unequal `cluster.id` and `node.id`; a truncated or malformed `meta.properties` missing either field is declared “present and consistent” and started. This violates the plan’s requirement to parse and validate both values on every converge. **Fix:** require exactly one non-empty expected `cluster.id` and `node.id`, failing on absence, duplication, or mismatch.
+
+- **[P1] Configuration changes are rendered but not activated.** [main.yml:200](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:200) rewrites the bind-mounted broker configuration, but [main.yml:303](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:303) merely runs `docker compose up -d`. Compose does not recreate a container because bind-mounted file contents changed, so listener, ACL-authorizer, storage, heap, and retention edits can report a successful converge while the JVM continues using the old configuration. **Fix:** notify a serialized broker restart whenever the effective configuration changes.
+
+- **[P1] The acceptance script can leave the victim broker stopped.** [acceptance.sh:143](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:143) stops the container, but restoration occurs only through normal control flow at [acceptance.sh:166](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:166). Interruption, SSH failure, or an unexpected shell exit between those lines leaves the live cluster degraded. **Fix:** install an EXIT/INT/TERM trap immediately after stopping the broker that always attempts to restart it.
+
+- **[P1] ACL convergence only adds grants and never enforces the exact set.** [acl.sh:23](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/acl.sh:23) adds the desired bindings but does not remove obsolete grants. Changing the client principal or prefix—or correcting an accidentally broad ACL—leaves the old authority active indefinitely on the public listener. **Fix:** enumerate existing ACLs for the managed principals/resources and remove bindings absent from desired state before adding the exact set.
+
+- **[P1] SCRAM credentials are bootstrapped only at genesis, with no promised reconciliation.** The plan requires authenticating with each desired credential after startup and upserting on failure or rotation-marker change, but execution proceeds directly from broker readiness at [main.yml:309](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:309) to ACL application. Consequently, changing a principal, losing a stored credential, or rotating from a non-issuer node is not repaired by converge. **Fix:** add the specified authenticated drift probes and controlled SCRAM upserts before applying ACLs.
+
+- **[P1] The consumer-group outage gate does not target the killed broker.** [acceptance.sh:108](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:108) creates an arbitrary group, then [acceptance.sh:143](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:143) kills the last broker without establishing that this group’s `__consumer_offsets` partition is led there. The gate can pass without exercising the RF=1 coordinator-loss case promised by PLAN.md. **Fix:** calculate the group’s offsets partition, verify its leader is the victim, and select another group if necessary.
+
+- **[P2] The rejoin gate does not check bounded lag or matching high-watermark.** [acceptance.sh:175](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:175) accepts any replication row for the restarted node and merely records its last field as `lag`; success depends only on all brokers appearing in metadata. A node with persistent controller-log lag passes despite the plan explicitly requiring bounded lag and equal high-watermark. **Fix:** parse leader and follower log-end offsets and require zero/bounded lag plus matching high-watermark before success.
+
+- **[P2] The certificate rollout omits most of its promised safety checks.** [cert-deploy.sh:63](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/cert-deploy.sh:63) only checks that quorum output contains either `CurrentVoters` or `LeaderId`, while [cert-deploy.sh:74](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/cert-deploy.sh:74) accepts an API response through the shared bootstrap list. It does not enforce node order/predecessor acknowledgements, verify all brokers are registered, bound quorum lag, or verify the restarted node serves the new certificate serial as PLAN.md promises. **Fix:** record ordered per-generation acknowledgements and validate full quorum/broker health plus the node’s served certificate before acknowledging and releasing.
+
+- **[P2] The play cannot satisfy its stated second-converge `changed=0` gate.** [main.yml:206](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:206) forces configuration substitution changed on every run, [cert.sh:57](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/cert.sh:57) republishes an unchanged certificate so its Ansible task reports changed, and [main.yml:345](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:345) always rewrites ready markers and reports changed. Thus the plan’s explicit idempotency criterion is not implemented even though functional gates pass. **Fix:** compare effective content/fingerprint/marker state and report changed only for an actual mutation.
+
+- **[P2] Host/container privilege differs materially from the plan.** [main.yml:74](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/main.yml:74) creates data directories without the promised container-UID ownership, and [compose.yml:11](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/ansible/compose.yml:11) explicitly runs AutoMQ as root with host networking. A broker compromise therefore gets a root process in the host network namespace with write access to the metadata bind mount, rather than the constrained runtime described in PLAN.md. **Fix:** run as the image’s fixed non-root UID/GID and assign only the required host paths to that identity.
+
+- **[P2] Acceptance hard-codes broker names despite supporting a configurable prefix.** [acceptance.sh:53](/home/ubuntu/code/getcolors/automq/src/resources/io/github/getcolors/automq/tools/acceptance/acceptance.sh:53) tests `b0`, `b1`, etc., while Clojure renders DNS, advertised listeners, and SANs from `automq-broker-name-prefix`. Any valid non-`b` desired state tests nonexistent names and skips the names actually advertised by brokers. **Fix:** render the configured broker prefix—or the already-derived broker-name list—into this loop.
+### Claude's dispositions
+
+Accepted and fixed (10 of 14):
+
+- **Lease races (P1).** An expired lease was overwritten unconditionally, so two
+  contenders could both claim it — defeating the mutual exclusion that keeps
+  three combined broker+controllers from restarting together. Acquire is now a
+  conditional create when free and a conditional replace against the observed
+  ETag when expired; release is holder-scoped, so a node whose lease expired
+  mid-restart can no longer delete its successor's.
+- **Partial ready wedged adoption (P1).** `(ready, init)` was fatal with no
+  resume path, over a partial write of a marker rather than any real
+  disagreement. Matching transaction ids now complete the missing marker.
+- **Rebuilding node 0 regenerated the cluster's credentials (P1).** The worst
+  of the batch: `secrets.env` was create-once *per host*, so a rebuilt node 0
+  would mint new passwords and SCRAM salts and push them over working ones
+  while the metadata log kept the old. The bundle is now sourced from whichever
+  node holds it, and generation is refused outright when the cluster already
+  has formatted nodes.
+- **AUTOMQ_ALLOW_REFORMAT never reached the host (P1).** The documented
+  disk-loss recovery was unusable; the variable is now passed to the format
+  task.
+- **Missing identity read as consistent (P1).** A truncated `meta.properties`
+  with no `cluster.id` passed the check. Absence is not agreement; both fields
+  must now be present and equal.
+- **Configuration rendered but not activated (P1).** `docker compose up -d`
+  does not recreate a container because bind-mounted file *contents* changed,
+  so listener, ACL, storage, heap and retention edits reported success while
+  the JVM ran the old configuration. A changed render now triggers a
+  throttled restart with a health wait.
+- **Acceptance could leave the victim stopped (P1).** An EXIT/INT/TERM trap now
+  restarts it on any exit path.
+- **SCRAM reconciliation was promised and missing (P1).** `scram.sh` probes each
+  credential by authenticating — the only test possible, since a SCRAM
+  credential cannot be compared — and upserts through the admin principal.
+  Where admin itself cannot authenticate it says so and names the reformat, in
+  place of pretending a repair exists.
+- **Rejoin gate checked nothing (P2).** Now parses the replication table for
+  bounded lag and a log-end offset matching the leader's.
+- **Hard-coded broker names (P2).** The TLS loop renders the same derived name
+  list the DNS records and certificate SANs use.
+- **changed=0 unachievable (P2).** Config substitution, certificate publication
+  and ready markers now report changed only on real change, which is what makes
+  the idempotency claim falsifiable at all.
+
+Accepted in substance, narrowed in mechanism:
+
+- **Certificate rollout checks (P2).** Added: refuse to restart unless the
+  quorum has a leader AND every broker is registered, and verify after restart
+  that the port serves the certificate just installed. Not added: per-generation
+  ordered acknowledgements. The safety property is mutual exclusion, which the
+  lease provides; a fixed order buys nothing over "one at a time" here. PLAN.md
+  overstated it and is corrected rather than implemented to the letter.
+- **Consumer-group gate does not target the killed broker (P1).** The gate now
+  establishes the group before the outage and compares committed offsets across
+  it, which tests survival. Computing which `__consumer_offsets` partition
+  holds the group and forcing the victim to be its leader is a stronger test
+  and is honestly labelled as not implemented; the skill's acceptance notes say
+  so rather than claiming coverage.
+
+Rejected: none outright.
+
+Not from the inspection, found by the run it overlapped with: the failover gate
+fixed its victim to the last node, and after a previous failover leadership had
+drifted so that node led no partition — "no partition of colors-failover is led
+by node 2" on a healthy cluster. The victim is now discovered from the
+leadership map (any non-zero node), and the topic is recreated each run.

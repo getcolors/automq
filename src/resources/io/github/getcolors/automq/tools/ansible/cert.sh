@@ -54,7 +54,13 @@ fi
 
 [ -s "$crt" ] && [ -s "$key" ] || { echo "cert: no certificate material at $crt" >&2; exit 1; }
 
-# Publishing is unconditional: a node that has never fetched the bundle needs
-# it to exist even on a converge that renewed nothing.
-fp=$("$STORE" tls-publish --cert "$crt" --keyfile "$key" --names "$NAMES")
-echo "cert: published $fp"
+# Publish when the published bundle is missing or stale — but not on every
+# converge, or the play can never report an unchanged run.
+local_fp=$(sha256sum "$crt" | cut -d" " -f1)
+published_fp=$("$STORE" tls-fingerprint 2>/dev/null || true)
+if [ "$local_fp" != "$published_fp" ]; then
+  fp=$("$STORE" tls-publish --cert "$crt" --keyfile "$key" --names "$NAMES")
+  echo "cert: published $fp"
+else
+  echo "cert: already published $published_fp"
+fi

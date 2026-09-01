@@ -14,10 +14,13 @@
 set -uo pipefail
 
 BOOTSTRAP="automq.example.com:9092"
+# Rendered from the same derivation the DNS records, advertised listeners and
+# certificate SANs use, so a non-default broker prefix cannot make this loop
+# test names nothing serves.
+IFS=',' read -ra CERT_NAMES <<< "automq.example.com,b0.automq.example.com,b1.automq.example.com,b2.automq.example.com"
 TOPIC="colors-failover"
 PROFILE="automq-optout"
 NODES=3
-LAST=$((NODES - 1))
 pass=0
 fail=0
 # Every record and group this run creates is tagged with it. These gates run on
@@ -50,7 +53,7 @@ kc() {
 }
 
 # --- 7: names resolve and the certificate they serve validates ---------------
-for name in automq.example.com $(for i in $(seq 0 $LAST); do echo "b${i}.automq.example.com"; done); do
+for name in "${CERT_NAMES[@]}"; do
   if ! getent hosts "$name" >/dev/null; then bad "$name does not resolve"; continue; fi
   if echo | openssl s_client -connect "${name}:9092" -servername "$name" \
        -verify_return_error >/dev/null 2>&1; then
@@ -122,6 +125,19 @@ fi
 # partitions can complete a round trip without ever touching the broker that
 # was killed, which is how a failover test passes while proving nothing.
 echo "acceptance: failover"
+
+# Recreated every run. Leadership drifts after a previous failover, so a topic
+# left from last time can easily have no partition led by any particular node —
+# which is what "no partition is led by node 2" meant on a healthy cluster.
+on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-topics.sh \
+  --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
+  --delete --topic $TOPIC" >/dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+  on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-topics.sh \
+    --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
+    --list" 2>/dev/null | grep -qx "$TOPIC" || break
+  sleep 2
+done
 on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-topics.sh \
   --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
   --create --if-not-exists --topic $TOPIC --partitions 6 \
@@ -130,18 +146,32 @@ on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-topics.sh \
 describe=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-topics.sh \
   --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
   --describe --topic $TOPIC" 2>/dev/null)
-victim_partition=$(awk -v want="$LAST" '/Partition:/ { for (i=1;i<=NF;i++) if ($i=="Leader:" && $(i+1)==want) { for (j=1;j<=NF;j++) if ($j=="Partition:") print $(j+1) } }' <<<"$describe" | head -1)
 
-if [ -z "$victim_partition" ]; then
-  bad "no partition of $TOPIC is led by node $LAST; cannot target the failover"
+# The victim is whichever non-zero node actually leads a partition. Fixing it to
+# the last node asserts something about placement that nothing guarantees; node
+# 0 is excluded only because it is this script's administrative path.
+victim=""
+victim_partition=""
+while read -r part leader; do
+  [ -n "$leader" ] || continue
+  [ "$leader" = "0" ] && continue
+  victim="$leader"; victim_partition="$part"; break
+done < <(awk '/Partition:/ { p=""; l=""; for (i=1;i<=NF;i++) { if ($i=="Partition:") p=$(i+1); if ($i=="Leader:") l=$(i+1) } if (p!="" && l!="") print p, l }' <<<"$describe")
+
+if [ -z "$victim" ]; then
+  bad "no partition of $TOPIC is led by a non-zero node; cannot target the failover"
 else
-  ok "partition $victim_partition of $TOPIC is led by node $LAST"
+  ok "partition $victim_partition of $TOPIC is led by node $victim"
 
   before=$(seq 1 100 | sed "s/^/before-$RUN-/")
   echo "$before" | kc -P -t "$TOPIC" -p "$victim_partition" 2>/dev/null
 
-  on "$LAST" "sudo docker stop automq" >/dev/null 2>&1
+  on "$victim" "sudo docker stop automq" >/dev/null 2>&1
   killed_at=$(date +%s)
+  # Whatever happens next — an assertion failing, an ssh error, an interrupt —
+  # the broker must come back. Without this the script can leave a live cluster
+  # one node down.
+  trap 'on "$victim" "sudo docker start automq" >/dev/null 2>&1 || true' EXIT INT TERM
 
   recovered=""
   for _ in $(seq 1 60); do
@@ -163,25 +193,33 @@ else
   [ "${kept:-0}" -eq 100 ] && ok "all 100 pre-failure records survived the leader's death" \
     || bad "only ${kept:-0} of 100 pre-failure records survived"
 
-  on "$LAST" "sudo docker start automq" >/dev/null 2>&1
+  on "$victim" "sudo docker start automq" >/dev/null 2>&1
+  trap - EXIT INT TERM
 
   # "Rejoined" is three measurements, not a voter-list entry: a static voter
-  # stays listed while it is dead.
+  # stays listed while it is dead. The replication table gives NodeId,
+  # LogEndOffset, Lag and Status, so lag and log-end offset are checkable
+  # rather than merely recorded.
   rejoined=""
   for _ in $(seq 1 60); do
     status=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
       --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
       describe --replication" 2>/dev/null)
-    if grep -qE "^$LAST[[:space:]]" <<<"$status"; then
-      lag=$(awk -v n="$LAST" '$1==n { print $NF }' <<<"$status" | head -1)
-      brokers=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
-        --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties" 2>/dev/null | grep -c 'id: ')
-      if [ "${brokers:-0}" -eq "$NODES" ]; then rejoined="lag=${lag:-?}"; break; fi
+    leader_leo=$(awk '$NF=="Leader" { print $3 }' <<<"$status" | head -1)
+    node_row=$(awk -v n="$victim" '$1==n { print }' <<<"$status" | head -1)
+    node_leo=$(awk '{ print $3 }' <<<"$node_row")
+    node_lag=$(awk '{ print $4 }' <<<"$node_row")
+    brokers=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
+      --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties" 2>/dev/null | grep -c 'id: ')
+    if [ "${brokers:-0}" -eq "$NODES" ] && [ -n "$node_leo" ] && [ -n "$leader_leo" ] \
+       && [ "${node_lag:-999}" -le 10 ] && [ "$node_leo" -ge $(( leader_leo - 10 )) ]; then
+      rejoined="lag=${node_lag} logEndOffset=${node_leo} leader=${leader_leo}"
+      break
     fi
     sleep 10
   done
-  [ -n "$rejoined" ] && ok "node $LAST re-registered and caught up ($rejoined)" \
-    || bad "node $LAST did not re-register and catch up within 600s"
+  [ -n "$rejoined" ] && ok "node $victim re-registered and caught up ($rejoined)" \
+    || bad "node $victim did not re-register with bounded lag within 600s"
 fi
 
 # --- 10b: the group survived the outage ---------------------------------------
@@ -203,7 +241,8 @@ fi
 # The gate that catches a controller listener which only appears to work at
 # genesis: PLAIN from a static JAAS file has to keep working when a controller
 # rejoins a quorum it did not bootstrap.
-on 1 "sudo docker restart automq" >/dev/null 2>&1
+controller_victim=$(( NODES > 1 ? 1 : 0 ))
+on "$controller_victim" "sudo docker restart automq" >/dev/null 2>&1
 requorum=""
 for _ in $(seq 1 60); do
   if on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
@@ -215,7 +254,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 10
 done
-[ -n "$requorum" ] && ok "a restarted controller re-authenticated and rejoined the quorum" \
+[ -n "$requorum" ] && ok "a restarted controller (node $controller_victim) re-authenticated and rejoined the quorum" \
   || bad "the quorum did not recover after restarting a controller"
 
 # --- 12: the cost of R2 being one provider away, measured ---------------------

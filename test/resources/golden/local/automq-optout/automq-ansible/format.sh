@@ -42,13 +42,23 @@ if [ -f "$META" ]; then
   # against this one's storage.
   have_cluster=$(sed -n 's/^cluster\.id=//p' "$META" | tr -d '\r')
   have_node=$(sed -n 's/^node\.id=//p' "$META" | tr -d '\r')
-  if [ -n "$have_cluster" ] && [ "$have_cluster" != "VrUQI4OSR0y5vnTrGiKsxQ" ]; then
+  # Absence is not agreement. A truncated or malformed meta.properties has no
+  # cluster.id to disagree with, and treating that as "consistent" starts a
+  # broker against storage whose identity is unknown.
+  if [ -z "$have_cluster" ] || [ -z "$have_node" ]; then
+    echo "FATAL: $META is missing cluster.id or node.id." >&2
+    echo "The metadata directory exists but its identity cannot be read, so it" >&2
+    echo "cannot be shown to belong to this cluster. Investigate before starting;" >&2
+    echo "do not reformat until you know whether this disk holds real metadata." >&2
+    exit 1
+  fi
+  if [ "$have_cluster" != "VrUQI4OSR0y5vnTrGiKsxQ" ]; then
     echo "FATAL: $META belongs to cluster $have_cluster, not VrUQI4OSR0y5vnTrGiKsxQ." >&2
     echo "Refusing to start. This disk is another cluster's; do not reformat it" >&2
     echo "unless you know that cluster is gone." >&2
     exit 1
   fi
-  if [ -n "$have_node" ] && [ "$have_node" != "$NODE_ID" ]; then
+  if [ "$have_node" != "$NODE_ID" ]; then
     echo "FATAL: $META claims node.id=$have_node but this host is node $NODE_ID." >&2
     exit 1
   fi

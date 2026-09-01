@@ -14,6 +14,10 @@ src=/etc/automq/server.properties.in
 dst=/etc/automq/server.properties
 umask 077
 
+# Reporting "changed" on every run makes the converge's own idempotency claim
+# unfalsifiable. Compare what we are about to write with what is there.
+before=$(sha256sum "$dst" 2>/dev/null | cut -d" " -f1)
+
 render() {
   sed -e "s|@CONTROLLER_PASSWORD@|${AUTOMQ_CONTROLLER_PASSWORD}|g" \
       -e "s|@BROKER_PASSWORD@|${AUTOMQ_BROKER_PASSWORD}|g" \
@@ -49,4 +53,9 @@ EOF
 chmod 0600 "$tmp"
 mv "$tmp" /etc/automq/client.properties
 
-echo "config: rendered"
+after=$(sha256sum "$dst" 2>/dev/null | cut -d" " -f1)
+if [ "$before" != "$after" ]; then
+  echo "config: changed"
+else
+  echo "config: unchanged"
+fi

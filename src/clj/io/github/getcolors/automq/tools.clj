@@ -274,7 +274,7 @@
 
 (def ansible-files
   ["ansible.cfg" "main.yml" "cleanup.yml" "compose.yml" "server.properties"
-   "store.py" "secrets.sh" "render-config.sh" "format.sh" "acl.sh"
+   "store.py" "secrets.sh" "render-config.sh" "format.sh" "acl.sh" "scram.sh"
    "cert.sh" "cert-deploy.sh" "cert-deploy.service" "cert-deploy.timer"
    "cert-renew.service" "cert-renew.timer"
    "status.sh" "credential.sh" "smoke.sh" "rotate.sh"])

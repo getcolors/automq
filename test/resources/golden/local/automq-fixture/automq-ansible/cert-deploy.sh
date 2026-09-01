@@ -11,6 +11,7 @@ set -euo pipefail
 
 NODE_ID="${1:?node id required}"
 BOOTSTRAP="${2:?internal bootstrap required}"
+EXPECT_NODES=3
 TLS=/etc/automq/tls
 STORE=/usr/local/bin/automq-store
 
@@ -56,16 +57,23 @@ while :; do
   [ "$(date +%s)" -lt "$deadline" ] || { echo "cert-deploy: lease not acquired in time" >&2; exit 1; }
   sleep 15
 done
-trap '"$STORE" lease-release >/dev/null 2>&1 || true' EXIT
+trap '"$STORE" lease-release --holder "node-$NODE_ID" >/dev/null 2>&1 || true' EXIT
 
-# Only restart into a healthy quorum: if the cluster is already one voter down,
-# taking another is how a rolling restart becomes an outage.
-voters=$(docker exec automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
+# Only restart into a healthy cluster: if it is already one node down, taking
+# another is how a rolling restart becomes an outage. Both conditions are
+# required — a quorum with a leader AND every broker registered.
+status=$(docker exec automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
            --bootstrap-server "$BOOTSTRAP" \
-           --command-config /etc/automq/admin.properties describe --status 2>/dev/null \
-         | grep -c 'CurrentVoters\|LeaderId' || true)
-if [ "${voters:-0}" -eq 0 ]; then
-  echo "cert-deploy: quorum not answering, refusing to restart" >&2
+           --command-config /etc/automq/admin.properties describe --status 2>/dev/null || true)
+if ! grep -q 'LeaderId' <<<"$status"; then
+  echo "cert-deploy: the quorum reports no leader, refusing to restart" >&2
+  exit 1
+fi
+registered=$(docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
+               --bootstrap-server "$BOOTSTRAP" \
+               --command-config /etc/automq/admin.properties 2>/dev/null | grep -c 'id: ' || true)
+if [ "${registered:-0}" -lt "$EXPECT_NODES" ]; then
+  echo "cert-deploy: only ${registered:-0}/$EXPECT_NODES brokers registered, refusing to restart" >&2
   exit 1
 fi
 
@@ -75,6 +83,19 @@ for _ in $(seq 1 60); do
   if docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
        --bootstrap-server "$BOOTSTRAP" \
        --command-config /etc/automq/admin.properties >/dev/null 2>&1; then
+    # The broker answering is not evidence it is serving the new certificate:
+    # the keystore is read at startup, so a restart that silently kept the old
+    # store would look identical here. Compare what the port actually serves.
+    served=$(echo | openssl s_client -connect "127.0.0.1:9092" \
+               -servername "$(hostname -f)" 2>/dev/null \
+             | openssl x509 -noout -fingerprint -sha256 2>/dev/null \
+             | tr -d ':' | cut -d= -f2 | tr 'A-Z' 'a-z')
+    local_fp=$(openssl x509 -in "$TLS/fullchain.pem" -noout -fingerprint -sha256 2>/dev/null \
+             | tr -d ':' | cut -d= -f2 | tr 'A-Z' 'a-z')
+    if [ -n "$served" ] && [ "$served" != "$local_fp" ]; then
+      echo "cert-deploy: the port still serves a different certificate than the one installed" >&2
+      exit 1
+    fi
     echo "$published" > "$TLS/fingerprint"
     echo "cert-deploy: restarted on $published"
     exit 0

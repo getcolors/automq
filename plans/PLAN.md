@@ -109,7 +109,10 @@ node order; a node may restart only after acquiring the deploy lease
 (conditional create, `If-None-Match: *`, with a TTL so a dead holder cannot
 wedge the cluster) *and* seeing its predecessor's completion acknowledgement.
 It verifies quorum health, broker registration, and the served certificate
-serial, writes its own acknowledgement, and releases. These are combined
+before releasing. Ordered per-generation acknowledgements were specified here
+and are deliberately not implemented: the safety property is mutual exclusion,
+which the lease already provides, and a fixed order buys nothing over "one at a
+time" on a cluster this size. These are combined
 broker+controller nodes: restarting all three together destroys the KRaft
 majority.
 
