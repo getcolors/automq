@@ -26,7 +26,7 @@
 ;; Managed by `bb pin` — do not edit by hand. nil before this repository has
 ;; been pushed and stamped: a launcher that cannot resolve its own library says
 ;; so rather than inventing a SHA or silently using whatever is lying around.
-(def ^:private automq-sha "7de242e236f0ce1dde92f09148f06deb51092b78")
+(def ^:private automq-sha "bfcdd5b5bc3d9800ce6bbd05e0d9c64f596e41af")
 
 (def ^:private automq-git-url "https://github.com/getcolors/automq.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
