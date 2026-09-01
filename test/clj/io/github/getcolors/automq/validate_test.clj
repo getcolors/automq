@@ -77,8 +77,13 @@
   (is (error-matching (assoc base :automq-admin-user "automq") #"must all differ"))
   (is (nil? (error-matching base #"must all differ"))))
 
-(deftest the-destroy-guard-must-stay-in-desired-state
-  (is (error-matching (assoc base :compute-prevent-destroy false) #"must remain true")))
+(deftest the-destroy-guard-accepts-the-one-run-override
+  ;; The override arrives through the same COLORS_PAR overlay as every other
+  ;; parameter, so rejecting `false` here would make the documented way to
+  ;; destroy this deployment impossible. The delete-time validator is what
+  ;; refuses a destroy while the guard is still true.
+  (is (nil? (error-matching (assoc base :compute-prevent-destroy false) #"prevent-destroy")))
+  (is (error-matching (assoc base :compute-prevent-destroy "yes") #"must be true or false")))
 
 (deftest sources-must-be-cidr-lists
   (is (error-matching (assoc base :vultr-kafka-sources "0.0.0.0/0") #"YAML list"))

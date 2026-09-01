@@ -77,8 +77,15 @@
       [":provider-dns must be cloudflare"])
     (when-not (contains? #{"local" "s3" "r2"} (:provider-backend opts))
       [":provider-backend must be local, s3, or r2"])
-    (when-not (true? (:compute-prevent-destroy opts))
-      [":compute-prevent-destroy must remain true in desired state"])
+    ;; boolean?, not true?. The guard is lifted for exactly one run by
+    ;; COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
+    ;; overlay as every other parameter — so demanding `true` here would reject
+    ;; the override before the delete-time guard could honour it, and the
+    ;; documented way to destroy this deployment would not work at all. What
+    ;; must stay true is the value COMMITTED to colors.yml, and that is a
+    ;; review rule rather than something validation can see.
+    (when-not (boolean? (:compute-prevent-destroy opts))
+      [":compute-prevent-destroy must be true or false"])
 
     ;; --- cluster shape
     ;; An even count is not merely unusual, it is worse than the odd count
