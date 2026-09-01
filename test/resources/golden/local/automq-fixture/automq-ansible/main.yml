@@ -83,6 +83,32 @@
         - { path: /var/lib/automq, mode: "0755" }
         - { path: /var/lib/automq/metadata, mode: "0755" }
 
+    # There are TWO firewalls in front of these nodes and the package must own
+    # both. Vultr's firewall group is desired state in the compute stage; ufw
+    # ships ENABLED on the Vultr Ubuntu image with `default deny (incoming)`
+    # and a single 22/tcp rule. It passes ICMP, so every node pings every other
+    # node and the private network looks healthy while every TCP connection
+    # between them is dropped — the quorum never elects, and nothing in Kafka's
+    # output mentions a firewall. It would also have silently blocked the
+    # public Kafka port.
+    - name: Open the cluster ports in the host firewall
+      ansible.builtin.shell: |
+        set -uo pipefail
+        changed=0
+        add() {
+          out=$(ufw allow "$@" 2>&1)
+          echo "$out"
+          case "$out" in *"Rule added"*) changed=1;; esac
+        }
+        add proto tcp from any to any port 9092
+        add proto tcp from 10.40.0.0/24 to any port 9093
+        add proto tcp from 10.40.0.0/24 to any port 9094
+        if [ "$changed" = 1 ]; then echo CHANGED; fi
+      args:
+        executable: /bin/bash
+      register: ufw_result
+      changed_when: "'CHANGED' in ufw_result.stdout"
+
     - name: Install the object-store helper and the operator commands
       ansible.builtin.copy:
         src: "{{ item.src }}"
