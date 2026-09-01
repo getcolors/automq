@@ -37,24 +37,27 @@
                     (when-let [v (not-empty (str (get opts k)))] [env-var v])))
          (apply merge (map #(validate/tofu-env opts %) (conj (vec slots) :provider-backend))))))
 
-(defn normalize-params
-  "Keywordize the compute stage's output and hyphenate its keys.
+(defn- hyphenate-keys
+  "HCL object keys are snake_case and Clojure keys are kebab-case. `vpc_ip` is
+  the first output in this project with a word boundary at all — ip, user and
+  name are spelled identically in both conventions — so nothing had exposed
+  the mismatch before."
+  [m]
+  (into {} (map (fn [[k v]] [(keyword (str/replace (name (keyword k)) "_" "-")) v]))
+        (walk/keywordize-keys m)))
 
-  HCL object keys are conventionally snake_case, Clojure keys are kebab-case,
-  and `vpc_ip` is the first key in this project long enough to have a word
-  boundary at all — every earlier package's outputs were `ip`, `user`, `name`,
-  where the two conventions happen to agree. Converting here keeps the
-  template idiomatic and the Clojure idiomatic, and keeps the mismatch from
-  being re-discovered by whoever adds the next multi-word output."
+(defn normalize-params
+  "The compute stage's `params` output.
+
+  The outer keys are deliberately NOT hyphenated: `ssh_key_id` is the SSH
+  Keypair Standard's contract with ONCE's create preflight, which reads it
+  verbatim. Only the node entries are converted."
   [params]
-  (mapv (fn [m]
-          (into {} (map (fn [[k v]]
-                          [(keyword (str/replace (name (keyword k)) "_" "-")) v]))
-                (walk/keywordize-keys m)))
-        params))
+  (-> (walk/keywordize-keys params)
+      (update :nodes #(mapv hyphenate-keys %))))
 
 (defn output-params
-  "The compute stage's `params` output. A list, one entry per node."
+  "The compute stage's `params` output, normalized."
   [result]
   (some-> (get-in result [:tofu/outputs :params]) normalize-params))
 
@@ -66,9 +69,9 @@
   (try (some-> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
                                       (credential-env opts)))
                normalize-params)
-       (catch Exception _ nil)))
+       (catch Exception _ nil))) 
 
-(defn nodes [opts] (cluster/nodes opts (:automq/params opts)))
+(defn nodes [opts] (cluster/nodes opts (:nodes (:automq/params opts))))
 
 ;; ------------------------------------------------------------------ compute
 
@@ -97,7 +100,7 @@
       (= :delete (:green/event opts)) result
       :else
       (let [params (output-params result)]
-        (if-let [err (cluster/missing-node-error opts params)]
+        (if-let [err (cluster/missing-node-error opts (:nodes params))]
           (assoc result :green/exit 1 :green/err err)
           (assoc result :automq/params params))))))
 
@@ -279,7 +282,7 @@
 
 (defn ansible-step [opts]
   (let [dir (tool-dir opts ansible-tool)]
-    (if (and (= :delete (:green/event opts)) (empty? (:automq/params opts)))
+    (if (and (= :delete (:green/event opts)) (empty? (:nodes (:automq/params opts))))
       ;; No compute in state: there is nothing to stop, and the cleanup play
       ;; would only fail against the placeholder addresses.
       (assoc opts :green/exit 0)

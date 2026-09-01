@@ -105,23 +105,26 @@ resource "vultr_instance" "node" {
   lifecycle { prevent_destroy = true }
 }
 
-# A list, one entry per node, consumed as the Ansible inventory. `index` is the
-# KRaft node.id, the machine label's suffix, and the broker name's ordinal —
-# one number, so the three cannot drift apart.
+# The SSH Keypair Standard's contract: ownership is the resource id recorded
+# in state and surfaced as `params.ssh_key_id`. That is why `params` is an
+# object rather than the bare node list it would otherwise be — a list has
+# nowhere to put the key id, and ONCE's create preflight would then report a
+# key this deployment created as foreign.
+#
+# `index` is the KRaft node.id, the machine label's suffix, and the broker
+# name's ordinal — one number, so the three cannot drift apart.
 output "params" {
-  value = [
-    for i, node in vultr_instance.node : {
-      index  = i
-      ip     = node.main_ip
-      vpc_ip = node.internal_ip
-      user   = "root"
-      sudoer = "root"
-      name   = node.label
-    }
-  ]
+  value = {
+    ssh_key_id = vultr_ssh_key.machine.id
+    nodes = [
+      for i, node in vultr_instance.node : {
+        index  = i
+        ip     = node.main_ip
+        vpc_ip = node.internal_ip
+        user   = "root"
+        sudoer = "root"
+        name   = node.label
+      }
+    ]
+  }
 }
-
-output "ssh_key_id" {
-  value = vultr_ssh_key.machine.id
-}
-

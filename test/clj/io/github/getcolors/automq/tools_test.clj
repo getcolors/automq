@@ -20,15 +20,19 @@
    {:index 1 :ip "203.0.113.11" :vpc-ip "10.40.0.4" :user "root"}
    {:index 2 :ip "203.0.113.12" :vpc-ip "10.40.0.5" :user "root"}])
 
-(deftest compute-output-keys-are-hyphenated-at-the-boundary
-  ;; HCL objects are snake_case and Clojure is kebab-case. vpc_ip is the first
-  ;; output in this project with a word boundary at all — ip, user and name
-  ;; happen to be spelled identically in both conventions — so the mismatch
-  ;; showed up only against a real apply.
-  (let [raw [{"index" 0 "ip" "203.0.113.10" "vpc_ip" "10.40.0.4" "user" "root"}]
-        [n] (tools/normalize-params raw)]
+(deftest node-keys-are-hyphenated-but-ssh-key-id-is-not
+  ;; Two conventions meet at this boundary and only one of them may win per
+  ;; key. Node entries become kebab-case, because that is what the Clojure
+  ;; reads. `ssh_key_id` stays verbatim, because it is the SSH Keypair
+  ;; Standard's contract with ONCE's create preflight — hyphenating it makes
+  ;; the preflight report a key this deployment created as foreign.
+  (let [raw {"ssh_key_id" "7692e92a"
+             "nodes" [{"index" 0 "ip" "203.0.113.10" "vpc_ip" "10.40.0.4" "user" "root"}]}
+        params (tools/normalize-params raw)
+        [n] (:nodes params)]
+    (is (= "7692e92a" (:ssh_key_id params)))
+    (is (nil? (:ssh-key-id params)))
     (is (= "10.40.0.4" (:vpc-ip n)))
-    (is (= "203.0.113.10" (:ip n)))
     (is (nil? (:vpc_ip n)))))
 
 (deftest the-zone-is-the-registrable-domain
@@ -76,7 +80,7 @@
                          (re-find #"(?i)secret|password|token|access.key" (name k))))
                   data))
     (is (= "0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093"
-           (:quorum-voters (tools/ansible-data (assoc opts :automq/params params)))))))
+           (:quorum-voters (tools/ansible-data (assoc opts :automq/params {:nodes params})))))))
 
 (deftest the-compute-stage-renders-every-value-its-template-names
   ;; A Selmer key that is absent renders as empty rather than failing, so the
