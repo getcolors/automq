@@ -20,6 +20,17 @@
    {:index 1 :ip "203.0.113.11" :vpc-ip "10.40.0.4" :user "root"}
    {:index 2 :ip "203.0.113.12" :vpc-ip "10.40.0.5" :user "root"}])
 
+(deftest compute-output-keys-are-hyphenated-at-the-boundary
+  ;; HCL objects are snake_case and Clojure is kebab-case. vpc_ip is the first
+  ;; output in this project with a word boundary at all — ip, user and name
+  ;; happen to be spelled identically in both conventions — so the mismatch
+  ;; showed up only against a real apply.
+  (let [raw [{"index" 0 "ip" "203.0.113.10" "vpc_ip" "10.40.0.4" "user" "root"}]
+        [n] (tools/normalize-params raw)]
+    (is (= "10.40.0.4" (:vpc-ip n)))
+    (is (= "203.0.113.10" (:ip n)))
+    (is (nil? (:vpc_ip n)))))
+
 (deftest the-zone-is-the-registrable-domain
   (is (= "example.com" (tools/zone opts))))
 

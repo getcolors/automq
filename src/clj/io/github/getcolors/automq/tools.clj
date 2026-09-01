@@ -37,21 +37,35 @@
                     (when-let [v (not-empty (str (get opts k)))] [env-var v])))
          (apply merge (map #(validate/tofu-env opts %) (conj (vec slots) :provider-backend))))))
 
+(defn normalize-params
+  "Keywordize the compute stage's output and hyphenate its keys.
+
+  HCL object keys are conventionally snake_case, Clojure keys are kebab-case,
+  and `vpc_ip` is the first key in this project long enough to have a word
+  boundary at all — every earlier package's outputs were `ip`, `user`, `name`,
+  where the two conventions happen to agree. Converting here keeps the
+  template idiomatic and the Clojure idiomatic, and keeps the mismatch from
+  being re-discovered by whoever adds the next multi-word output."
+  [params]
+  (mapv (fn [m]
+          (into {} (map (fn [[k v]]
+                          [(keyword (str/replace (name (keyword k)) "_" "-")) v]))
+                (walk/keywordize-keys m)))
+        params))
+
 (defn output-params
-  "The compute stage's `params` output, keywordized. A list, one entry per
-  node."
+  "The compute stage's `params` output. A list, one entry per node."
   [result]
-  (some->> (get-in result [:tofu/outputs :params])
-           (mapv walk/keywordize-keys)))
+  (some-> (get-in result [:tofu/outputs :params]) normalize-params))
 
 (defn state-output
   "The applied `params`, or nil when no state is readable. The SSH Keypair
   Standard's create matrix keys on this best-effort read: an unreadable state
   (a fresh clone, a missing backend) counts as absent."
   [opts]
-  (try (some->> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
-                                       (credential-env opts)))
-                (mapv walk/keywordize-keys))
+  (try (some-> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
+                                      (credential-env opts)))
+               normalize-params)
        (catch Exception _ nil)))
 
 (defn nodes [opts] (cluster/nodes opts (:automq/params opts)))
