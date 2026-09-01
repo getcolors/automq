@@ -12,38 +12,49 @@
 # The SAN list is enumerated, never wildcarded: the bootstrap name plus each
 # broker's own name. A wildcard would still need the apex as a separate SAN and
 # would cover names this cluster does not serve.
+#
+# lego 5.x moved --accept-tos, --email, --domains and --path out of the global
+# options and under the subcommand; `lego --accept-tos run …` fails with
+# "flag provided but not defined: -accept-tos". The invocation below matches
+# the one the agent-network package already runs in production against the
+# same zone: subcommand first, LEGO_PATH from the environment, short flags.
 set -euo pipefail
 
-LEGO=/usr/local/bin/lego
-DATA=/etc/automq/lego
-NAMES="$1"
+NAMES="${1:?comma-separated certificate names required}"
 STORE=/usr/local/bin/automq-store
+export LEGO_PATH=/etc/automq/lego
 
-install -d -m 0700 "$DATA"
+install -d -m 0700 "$LEGO_PATH"
+umask 077
 
-domains=()
 IFS=',' read -ra parts <<< "$NAMES"
-for d in "${parts[@]}"; do domains+=(--domains "$d"); done
+domains=()
+for d in "${parts[@]}"; do domains+=(-d "$d"); done
 
-# CLOUDFLARE_DNS_API_TOKEN is exported by the caller and never written to disk.
-if [ -d "$DATA/certificates" ] && compgen -G "$DATA/certificates/*.crt" >/dev/null; then
-  set +e
-  "$LEGO" --accept-tos --email "fixture@example.com" \
-      --dns cloudflare --path "$DATA" "${domains[@]}" renew --days 30
-  rc=$?
-  set -e
-  # lego exits non-zero when there is nothing to renew on some versions; the
-  # certificate on disk is the evidence, not the exit code.
-  if [ $rc -ne 0 ]; then echo "cert: renew returned $rc, checking material"; fi
-else
-  "$LEGO" --accept-tos --email "fixture@example.com" \
-      --dns cloudflare --path "$DATA" "${domains[@]}" run
-fi
+# --dns.propagation.disable-rns: lego otherwise polls the zone's authoritative
+# nameservers itself and refuses to proceed until every one agrees, which is a
+# check Cloudflare's anycast estate does not satisfy the way lego expects.
+common=(--dns cloudflare --dns.resolvers 1.1.1.1:53 --dns.propagation.disable-rns)
 
 first="${parts[0]}"
-crt="$DATA/certificates/${first}.crt"
-key="$DATA/certificates/${first}.key"
+crt="$LEGO_PATH/certificates/${first}.crt"
+key="$LEGO_PATH/certificates/${first}.key"
+
+if [[ ! -s $crt ]]; then
+  /usr/local/bin/lego run -a -m "fixture@example.com" \
+    "${domains[@]}" "${common[@]}" >&2
+elif ! openssl x509 -noout -checkend 2592000 -in "$crt" >/dev/null 2>&1; then
+  # Thirty days out. Renewing earlier burns rate limit; renewing later leaves
+  # no room for a failed attempt to be noticed and fixed.
+  /usr/local/bin/lego renew -m "fixture@example.com" \
+    "${domains[@]}" "${common[@]}" >&2
+else
+  echo "cert: current certificate is valid for more than 30 days"
+fi
+
 [ -s "$crt" ] && [ -s "$key" ] || { echo "cert: no certificate material at $crt" >&2; exit 1; }
 
+# Publishing is unconditional: a node that has never fetched the bundle needs
+# it to exist even on a converge that renewed nothing.
 fp=$("$STORE" tls-publish --cert "$crt" --keyfile "$key" --names "$NAMES")
 echo "cert: published $fp"
