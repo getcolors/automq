@@ -320,8 +320,16 @@
   the certificate they serve validates, that SASL_SSL admits the client
   principal and refuses a wrong password, that the ACLs deny what they should,
   and that killing a broker which leads a partition does not lose the records
-  written to it. Twenty minutes, because the failover gate waits for real
-  reassignment rather than asserting an exit code."
+  written to it.
+
+  Forty-five minutes, not twenty. Every wait in that script is bounded, but
+  the bounds add up: the partition becoming writable again (300s), the
+  survival read retried while the partition is reassigned (120s), the victim
+  rejoining with bounded lag (600s), and the controller quorum re-forming
+  (600s). Those are worst cases and the usual run is a fraction of them — but
+  a ceiling below the sum of the parts turns a slow cluster into a killed
+  test, and a killed test cannot run the trap that restarts the broker it
+  stopped."
   [opts]
   (let [rendered (sc/scaffold opts (acceptance-specs opts))]
     (if (not= :create (:green/event opts))
@@ -329,7 +337,7 @@
       (process-result
        rendered "acceptance"
        (process/run-with-timeout
-        ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")] {} 1200000)))))
+        ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")] {} 2700000)))))
 
 (defn generated-cleanup-step [opts]
   (-> opts
