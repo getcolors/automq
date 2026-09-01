@@ -85,6 +85,11 @@
          ;; `port = ""` — which survives build, golden, dry-run and validate,
          ;; and is rejected only by the provider on a real apply.
          :kafka-port (cluster/kafka-port opts)
+         ;; The quorum and inter-broker ports are opened to the VPC subnet
+         ;; only — see the firewall comment in main.tf for why that rule has
+         ;; to exist at all.
+         :controller-port (cluster/controller-port opts)
+         :internal-port (cluster/internal-port opts)
          :ssh-sources-hcl (tofu/hcl-list (cidrs opts :vultr-ssh-sources))
          :kafka-sources-hcl (tofu/hcl-list (cidrs opts :vultr-kafka-sources))))
 

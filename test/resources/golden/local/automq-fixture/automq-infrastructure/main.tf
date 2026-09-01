@@ -75,6 +75,27 @@ resource "vultr_firewall_rule" "kafka" {
   subnet_size       = tonumber(split("/", each.value)[1])
 }
 
+# The quorum's own ports, reachable only from inside the VPC.
+#
+# This rule is not belt-and-braces, it is load-bearing, and the way it fails
+# without it is the worst kind: a Vultr firewall group filters the PRIVATE
+# interface as well as the public one, and it does so selectively. ICMP passes,
+# so every node pings every other node and the network looks healthy. TCP does
+# not, so the controllers never exchange a vote, every node stays a candidate
+# through epoch after epoch, and the only visible symptom is the broker half
+# dying sixty seconds later with "Received a fatal error while waiting for the
+# controller to acknowledge that we are caught up" — a message about the
+# broker, pointing nowhere near the firewall.
+resource "vultr_firewall_rule" "cluster_internal" {
+  for_each          = toset(["9093", "9094"])
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  port              = each.value
+  ip_type           = "v4"
+  subnet            = local.vpc_block
+  subnet_size       = local.vpc_prefix
+}
+
 resource "vultr_instance" "node" {
   count = local.node_count
 

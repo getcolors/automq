@@ -91,7 +91,13 @@
     (is (= "automq-vultr" (:compute-name data)))
     (is (every? #(not (clojure.string/blank? (str (get data %))))
                 [:kafka-port :node-count :compute-name :ssh-sources-hcl
-                 :kafka-sources-hcl]))))
+                 :kafka-sources-hcl :controller-port :internal-port]))
+    (testing "the quorum ports reach the firewall template"
+      ;; Without a rule for these, a Vultr firewall group silently drops TCP
+      ;; on the private interface while still passing ICMP, and the cluster
+      ;; never elects a controller.
+      (is (= 9093 (:controller-port data)))
+      (is (= 9094 (:internal-port data))))))
 
 (deftest cidr-lists-survive-both-yaml-and-string-forms
   (is (= ["0.0.0.0/0" "::/0"] (tools/cidrs opts :vultr-ssh-sources)))
