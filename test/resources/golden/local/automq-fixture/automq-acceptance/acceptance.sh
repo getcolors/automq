@@ -23,8 +23,7 @@ fail=0
 
 ok()   { pass=$((pass+1)); echo "  ok   — $*"; }
 bad()  { fail=$((fail+1)); echo "  FAIL — $*" >&2; }
-node() { ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${PROFILE}-$1" "$@"; }
-on()   { local n="$1"; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${PROFILE}-${n}" "$@"; }
+on() { local n="$1"; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${PROFILE}-${n}" "$@"; }
 
 command -v kcat >/dev/null || { echo "acceptance: kcat is not on PATH" >&2; exit 2; }
 

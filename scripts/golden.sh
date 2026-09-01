@@ -75,6 +75,20 @@ for variant in colors optout; do
     echo "golden: $profile renders an ellipsis inside a Jinja expression" >&2; exit 1
   fi
 
+  # Every rendered shell script must actually parse. Template substitution can
+  # produce syntactically broken shell from a perfectly readable template — an
+  # empty value where a word was expected is the usual way — and the first
+  # place that would otherwise surface is a converge against real machines.
+  for script in "$actual"/*/*.sh; do
+    [ -e "$script" ] || continue
+    bash -n "$script" || { echo "golden: $profile rendered unparseable shell in $script" >&2; exit 1; }
+  done
+  for py in "$actual"/*/*.py; do
+    [ -e "$py" ] || continue
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$py" \
+      || { echo "golden: $profile rendered unparseable python in $py" >&2; exit 1; }
+  done
+
   # A build that reached the real ~/.ssh would leak the operator's home into
   # committed bytes and make the goldens workstation-specific.
   if grep -rq "$HOME/.ssh" "$actual"; then
