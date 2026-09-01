@@ -2,9 +2,12 @@
 
 ## Repository
 
-`automq` is a green-only Package Skill for a three-node [AutoMQ](https://github.com/AutoMQ/automq)
+`automq` is a tri-colour Package Skill for a three-node [AutoMQ](https://github.com/AutoMQ/automq)
 cluster on Vultr: Kafka 3.9.1 wire protocol, KRaft combined `broker,controller`
-roles, and Cloudflare R2 as the storage tier. OpenTofu manages a VPC, a
+roles, and Cloudflare R2 as the storage tier. `green/` (Clojure) is canonical;
+`red/` (TypeScript) and `blue/` (Python) are behavioural ports of it, and
+`scripts/parity.sh` is what makes "behavioural" checkable — one fixture, three
+colours, byte-identical trees. OpenTofu manages a VPC, a
 firewall that opens **22 and 9092 only**, and the instances; a second tofu
 stack manages Cloudflare records; Ansible converges a Compose stack on each
 node. The first consumer is `../automq-vultr`.
@@ -109,11 +112,32 @@ bucket, claims ownership with a conditional create, and carries one transaction
 id across both buckets so a half-adopted pair is resumable and a mismatched one
 is fatal.
 
+## Three colours, one behaviour
+
+Each colour owns a copy of the template tree — `green/src/resources/…/tools`,
+`red/resources/tools`, `blue/src/package_automq_blue/resources/tools` — because
+copies are the mechanism: a colour must render without resolving another
+colour's package. `scripts/parity.sh` diffs those three trees and the rendered
+output of both fixtures; a change to a template or a derivation lands in all
+three in the same commit, and passes parity here or it is not done.
+
+Two things the ports could not copy verbatim:
+
+- **The tool and Vultr preflight is asynchronous in red and blue.** Green's
+  validators shell out inline; red's and blue's `preflight` take synchronous
+  validators only. So `start-step` runs the check itself, over the same overlaid
+  state `preflight` rebuilds, and hands the findings to a closure validator —
+  which keeps every error in one exit-2 report instead of making the operator
+  fix one thing per run.
+- **The inventory and the record JSON are Cheshire's pretty format.** Every map
+  is built already sorted and printed by a small port of that printer, because
+  the bytes are the artifact contract, not an implementation detail.
+
 ## The SSH keypair and `~/.ssh/config`
 
 Born conforming to three workspace standards. Read
-`../workspace/standards/ssh-keypair.md` before touching `ssh.clj`,
-`../workspace/standards/ssh-config.md` before touching `ssh_config.clj`, and
+`../workspace/standards/ssh-keypair.md` before touching `ssh.clj`/`ssh.ts`/`ssh.py`,
+`../workspace/standards/ssh-config.md` before touching the `ssh_config` modules, and
 `../workspace/standards/compute-name.md` for why there is no required
 `vultr-name`. The keypair behaviour is ONCE's, reused so one standard has one
 implementation; the config block is this package's own copy (§7). The two
@@ -130,11 +154,14 @@ thing on every workstation.
 ## Commands
 
 ```sh
-bb test              # 44 tests
-bb golden            # two fixtures: keygen and opt-out
-bb golden:accept     # only after reading the diff
-./scripts/launcher.sh
-./green build
+cd green && bb test          # 47 tests
+cd green && bb golden        # two fixtures: keygen and opt-out
+cd green && bb golden:accept # only after reading the diff
+cd red   && bun test && bun run typecheck
+cd blue  && uv run pytest
+./scripts/parity.sh          # green, red and blue render the same bytes
+./scripts/launcher.sh        # all three copied payloads
+./green build                # ./red and ./blue take the same verbs
 ./green create --dry-run
 ./green create       # requires explicit authorization
 ./green delete       # guarded and destructive
@@ -146,11 +173,19 @@ must not touch `~/.ssh`.
 
 ## Coupling
 
-Pins Green and ONCE in `deps.edn`; the ONCE pin cannot go below `bc06f2f`,
-where the machine keypair moved into the operator's `~/.ssh`. Use
-`GREEN_LIB_ROOT`, `ONCE_LIB_ROOT`, and `AUTOMQ_LIB_ROOT` for working-tree
-development. Final launchers use a pushed SHA managed by `bb pin`; deployment
-launchers are copies, not symlinks.
+Every colour pins its own SDK and its own ONCE: `green/deps.edn`,
+`red/package.json`, `blue/pyproject.toml`. The ONCE pin cannot go below
+`bc06f2f`, where the machine keypair moved into the operator's `~/.ssh`, and the
+three colours are kept on the same ONCE commit — the SSH Keypair Standard has
+one implementation per colour and they must agree. Use `GREEN_LIB_ROOT`,
+`ONCE_LIB_ROOT`, and `AUTOMQ_LIB_ROOT` for working-tree development
+(`AUTOMQ_LIB_ROOT` names the repository root for every colour; red also accepts
+the `red/` dir directly).
+
+`bb pin` (from `green/`) stamps all three payloads from one pushed SHA. Red and
+blue are **born unpinned** — `null` in red's `PINS`, an empty `dependencies`
+list in blue's PEP 723 block — and say so rather than inventing a SHA.
+Deployment launchers are copies, not symlinks.
 
 ## Documentation
 

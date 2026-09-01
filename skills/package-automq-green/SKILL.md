@@ -4,7 +4,7 @@ description: Provision a three-node AutoMQ cluster on Vultr — Kafka-compatible
 license: MIT
 ---
 
-# AutoMQ cluster
+# AutoMQ cluster (Green)
 
 Read [references/configuration.md](references/configuration.md) before changing
 state or running a lifecycle command.

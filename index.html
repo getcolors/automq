@@ -13,9 +13,9 @@
 <script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
 </head>
 <body><main>
-  <p class="eyebrow">GREEN PACKAGE SKILL · VULTR · AUTOMQ</p>
+  <p class="eyebrow">GREEN · RED · BLUE PACKAGE SKILL · VULTR · AUTOMQ</p>
   <h1>AutoMQ Package Skill</h1>
-  <p class="lead">A reproducible Green workflow for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster on Vultr — the Kafka 3.9 wire protocol over brokers whose storage tier is object storage rather than replicated disks.</p>
+  <p class="lead">A reproducible workflow for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster on Vultr — the Kafka 3.9 wire protocol over brokers whose storage tier is object storage rather than replicated disks. Shipped in Clojure, TypeScript and Python, rendering the same bytes from one <code>colors.yml</code>.</p>
 
   <div class="callout"><strong>Replication factor 1 is the design, not a mistake.</strong> AutoMQ acknowledges a produce once the record is in Cloudflare R2, so replicas would add cost and write amplification without adding durability — upstream ships RF=1 for the same reason. The three nodes buy a controller quorum, partition failover, and throughput. What RF=1 does <em>not</em> buy is availability, which is why acceptance kills a broker that leads a specific partition and measures how long that partition stays unwritable.</div>
 
@@ -26,6 +26,7 @@ chmod +x green
 ./green build
 ./green create --dry-run</code></pre>
   <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization.</p>
+  <p>Substitute <code>package-automq-red/red</code> or <code>package-automq-blue/blue</code> for the same verbs on Bun or uv. The three colours render byte-identical artifacts, and <code>scripts/parity.sh</code> is what proves it on every change.</p>
 
   <h2>Architecture</h2>
   <div class="grid">

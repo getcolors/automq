@@ -9,3 +9,6 @@ target/
 .devenv/
 .direnv/
 node_modules/
+dist/
+__pycache__/
+*.pyc

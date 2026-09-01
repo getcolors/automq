@@ -1,0 +1,36 @@
+# The `~/.ssh/config` block, per the workspace SSH Config Standard.
+#
+# One managed block carries every alias this deployment owns: the bare profile,
+# which reaches node 0 and is what the standard promises an operator can type,
+# and one alias per node, because half of operating a quorum is reaching one
+# specific member of it. The addresses arrive as extra-vars — they are run-time
+# facts, and keeping them out of the rendered playbook is what makes the
+# committed goldens identical on every workstation (§6).
+- name: Manage the deployment's ssh config block
+  hosts: local
+  gather_facts: false
+  tasks:
+    - name: Ensure ~/.ssh exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ssh"
+        state: directory
+        mode: "0700"
+      when: block_state == "present"
+
+    - name: Write the managed block
+      ansible.builtin.blockinfile:
+        path: "{{ lookup('env', 'HOME') }}/.ssh/config"
+        create: true
+        mode: "0600"
+        marker: "# {mark} {{ host_alias }} ANSIBLE MANAGED BLOCK"
+        insertbefore: BOF
+        state: "{{ block_state }}"
+        block: |
+          {% for host in ssh_hosts %}
+          Host {{ host.name }}
+              HostName {{ host.ip }}
+              User root
+<% if ssh-keygen %>              IdentityFile <{ ssh-config-identity-file }>
+              IdentitiesOnly yes
+<% endif %>              StrictHostKeyChecking accept-new
+          {% endfor %}

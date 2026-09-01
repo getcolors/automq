@@ -1,0 +1,59 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+#
+# Managed by `bb pin` — do not edit by hand, and never invent a SHA.
+#
+# UNPINNED: this payload has never been stamped. `bb pin` cannot run until
+# the automq repository has been pushed; until then, point the launcher at a
+# checkout with AUTOMQ_LIB_ROOT=/path/to/automq
+"""Thin launcher for package-automq-blue.
+
+This file is both the skill payload and the repository entry point —
+blue/blue in the repository is a symlink to it. It deliberately holds no
+logic of its own: validation, the graph and the steps all live in the
+package-automq-blue library, where the test suite reaches them. A copied
+payload is the one place in this project where code cannot be tested, so
+nothing that can live elsewhere should live here.
+"""
+
+import os
+import subprocess
+import sys
+
+UNPINNED_ERROR = """\
+this launcher carries no automq pin.
+It has not been stamped by `bb pin`, which cannot run until the automq
+repository has been pushed.
+Point it at a checkout meanwhile: AUTOMQ_LIB_ROOT=/path/to/automq
+(or run through the repository project: cd automq/blue && uv run python -m package_automq_blue ...)
+"""
+
+
+def _lib_root_project(root: str) -> str:
+    """The uv project inside an AUTOMQ_LIB_ROOT checkout: the repository
+    root or its blue/ implementation both work."""
+    if os.path.isfile(os.path.join(root, "pyproject.toml")):
+        return root
+    return os.path.join(root, "blue")
+
+
+def main() -> None:
+    root = os.environ.get("AUTOMQ_LIB_ROOT")
+    if root:
+        result = subprocess.run(
+            ["uv", "run", "--project", _lib_root_project(root),
+             "python", "-m", "package_automq_blue", *sys.argv[1:]])
+        raise SystemExit(result.returncode)
+    try:
+        from package_automq_blue import exec  # resolvable only once pinned
+    except ImportError:
+        sys.stderr.write(UNPINNED_ERROR)
+        raise SystemExit(2)
+    exec()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,488 @@
+# Converge the AutoMQ cluster.
+#
+# The order below is the design, not a preference:
+#
+#   secrets before configuration   the SCRAM salt is bootstrapped into the
+#                                  metadata log at genesis, so it must exist
+#                                  and be identical everywhere first
+#   adoption before anything runs  a foreign bucket must fail the converge
+#                                  before a broker can write into it
+#   genesis decided once           three nodes each asking "does this cluster
+#                                  exist?" would race; node 0 decides and the
+#                                  answer is passed down
+#   certificate before start       the EXTERNAL listener will not open without
+#                                  a keystore
+#   gates before the ready marker  the marker means "this was proved", and it
+#                                  is what a later converge trusts
+#
+# Credentials appear only as lookup('env', …) expressions. They are written
+# literally into this file by the package and passed through untouched, so no
+# secret is ever in .colors/, in a golden, or in a template variable.
+- name: Converge AutoMQ
+  hosts: automq
+  gather_facts: true
+  any_errors_fatal: true
+  environment:
+    AUTOMQ_R2_ACCESS_KEY_ID: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}"
+    AUTOMQ_R2_SECRET_ACCESS_KEY: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}"
+
+  tasks:
+    # ---------------------------------------------------------------- host
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - openssl
+          - python3
+          # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
+          # PEP 668, and a managed package is one fewer thing to break on an
+          # unattended upgrade.
+          - python3-boto3
+        state: present
+        update_cache: true
+      retries: 3
+      delay: 10
+      register: apt_base
+      until: apt_base is succeeded
+
+    - name: Install Docker's apt key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Add the Docker repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine and the Compose plugin
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: true
+      retries: 3
+      delay: 10
+      register: apt_docker
+      until: apt_docker is succeeded
+
+    - name: Create the deployment directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /etc/automq, mode: "0755" }
+        - { path: /etc/automq/secrets, mode: "0700" }
+        - { path: /etc/automq/tls, mode: "0700" }
+        - { path: /var/lib/automq, mode: "0755" }
+        - { path: /var/lib/automq/metadata, mode: "0755" }
+
+    # There are TWO firewalls in front of these nodes and the package must own
+    # both. Vultr's firewall group is desired state in the compute stage; ufw
+    # ships ENABLED on the Vultr Ubuntu image with `default deny (incoming)`
+    # and a single 22/tcp rule. It passes ICMP, so every node pings every other
+    # node and the private network looks healthy while every TCP connection
+    # between them is dropped — the quorum never elects, and nothing in Kafka's
+    # output mentions a firewall. It would also have silently blocked the
+    # public Kafka port.
+    - name: Open the cluster ports in the host firewall
+      ansible.builtin.shell: |
+        set -uo pipefail
+        changed=0
+        add() {
+          out=$(ufw allow "$@" 2>&1)
+          echo "$out"
+          case "$out" in *"Rule added"*) changed=1;; esac
+        }
+        add proto tcp from any to any port <{ kafka-port }>
+        add proto tcp from <{ vultr-vpc-subnet }> to any port <{ controller-port }>
+        add proto tcp from <{ vultr-vpc-subnet }> to any port <{ internal-port }>
+        if [ "$changed" = 1 ]; then echo CHANGED; fi
+      args:
+        executable: /bin/bash
+      register: ufw_result
+      changed_when: "'CHANGED' in ufw_result.stdout"
+
+    - name: Install the object-store helper and the operator commands
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - { src: store.py, dest: /usr/local/lib/automq-store.py }
+        - { src: secrets.sh, dest: /usr/local/bin/automq-secrets }
+        - { src: render-config.sh, dest: /usr/local/bin/automq-render-config }
+        - { src: format.sh, dest: /usr/local/bin/automq-format }
+        - { src: acl.sh, dest: /usr/local/bin/automq-acl }
+        - { src: cert.sh, dest: /usr/local/bin/automq-cert }
+        - { src: scram.sh, dest: /usr/local/bin/automq-scram }
+        - { src: cert-deploy.sh, dest: /usr/local/bin/automq-cert-deploy }
+        - { src: smoke.sh, dest: /usr/local/bin/automq-smoke }
+        - { src: status.sh, dest: /usr/local/bin/automq-status }
+        - { src: credential.sh, dest: /usr/local/bin/automq-credential }
+        - { src: rotate.sh, dest: /usr/local/bin/automq-rotate }
+
+    # One wrapper, so every caller passes the same bucket identity and no
+    # script grows its own copy of the endpoint.
+    - name: Install the store wrapper
+      ansible.builtin.copy:
+        dest: /usr/local/bin/automq-store
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          exec python3 /usr/local/lib/automq-store.py \
+            --profile '<{ profile }>' \
+            --cluster-id '<{ automq-cluster-id }>' \
+            --endpoint '<{ automq-r2-endpoint }>' \
+            --region '<{ automq-r2-region }>' \
+            --data-bucket '<{ automq-data-r2-bucket }>' \
+            --ops-bucket '<{ automq-ops-r2-bucket }>' "$@"
+
+    - name: Write the storage credential environment for systemd units
+      ansible.builtin.copy:
+        dest: /etc/automq/store.env
+        mode: "0600"
+        content: |
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      no_log: true
+
+    # --------------------------------------------------------------- secrets
+
+    # Which node already holds the bundle decides everything below. Generating
+    # on node 0 unconditionally is a data-loss bug in disguise: rebuild node 0
+    # while the cluster and its storage survive, and it mints fresh passwords
+    # and SCRAM salts and pushes them over the working ones — while the
+    # credentials actually in the metadata log stay as they were.
+    - name: Probe whether this cluster has ever been initialized
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-state
+      register: genesis_probe
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Look for an existing secret bundle
+      ansible.builtin.stat:
+        path: /etc/automq/secrets/secrets.env
+      register: secrets_stat
+
+    - name: Default the secret source to the first node
+      ansible.builtin.set_fact:
+        secrets_source: "{{ ansible_play_hosts | first }}"
+      run_once: true
+
+    - name: Prefer a node that already holds the bundle
+      ansible.builtin.set_fact:
+        secrets_source: "{{ item }}"
+      loop: "{{ ansible_play_hosts }}"
+      when: hostvars[item].secrets_stat.stat.exists | default(false)
+      run_once: true
+
+    - name: Note whether any node holds the bundle
+      ansible.builtin.set_fact:
+        secrets_present: >-
+          {{ ansible_play_hosts
+             | map('extract', hostvars, ['secrets_stat', 'stat', 'exists'])
+             | select | list | length > 0 }}
+      run_once: true
+
+    - name: Refuse to mint new secrets for a cluster that already exists
+      ansible.builtin.fail:
+        msg: >-
+          This cluster has formatted nodes but no host carries
+          /etc/automq/secrets/secrets.env. Generating a new bundle would push
+          passwords and SCRAM salts that disagree with the credentials already
+          in the metadata log, and there is no authenticated path to repair
+          that. Restore the bundle from a surviving node or a backup before
+          converging again.
+      when:
+        - not (secrets_present | bool)
+        - (genesis_probe.stdout | from_json).initialized | bool
+      run_once: true
+
+    - name: Generate the cluster secrets, only at genesis
+      ansible.builtin.command: /usr/local/bin/automq-secrets
+      args:
+        creates: /etc/automq/secrets/secrets.env
+      when: not (secrets_present | bool)
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Read the cluster secrets from whichever node holds them
+      ansible.builtin.slurp:
+        src: /etc/automq/secrets/secrets.env
+      register: cluster_secrets
+      run_once: true
+      delegate_to: "{{ secrets_source }}"
+      no_log: true
+
+    # Distributed over the control connection rather than regenerated: the
+    # SCRAM salt bootstrapped into the metadata log has to be the same on every
+    # voter, and a per-node generation would produce three different clusters'
+    # worth of credentials for one set of principals.
+    - name: Distribute the cluster secrets
+      ansible.builtin.copy:
+        content: "{{ cluster_secrets.content | b64decode }}"
+        dest: /etc/automq/secrets/secrets.env
+        mode: "0600"
+      no_log: true
+
+    # -------------------------------------------------------------- adoption
+
+    - name: Adopt the object storage buckets
+      ansible.builtin.command: /usr/local/bin/automq-store adopt
+      register: adoption
+      changed_when: "'claimed' in adoption.stdout or 'completed' in adoption.stdout"
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Report the adoption outcome
+      ansible.builtin.debug:
+        msg: "storage: {{ adoption.stdout }}"
+      run_once: true
+
+    # --------------------------------------------------------- configuration
+
+    - name: Render the broker configuration template
+      ansible.builtin.template:
+        src: server.properties
+        dest: /etc/automq/server.properties.in
+        mode: "0644"
+
+    - name: Substitute the secrets into the configuration
+      ansible.builtin.command: /usr/local/bin/automq-render-config
+      register: render_config
+      changed_when: "'config: changed' in render_config.stdout"
+
+    - name: Render the Compose file
+      ansible.builtin.template:
+        src: compose.yml
+        dest: /etc/automq/compose.yml
+        mode: "0644"
+
+    - name: Write the Compose environment
+      ansible.builtin.copy:
+        dest: /etc/automq/.env
+        mode: "0600"
+        content: |
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      no_log: true
+
+    # ---------------------------------------------------------- certificates
+
+    - name: Install lego
+      ansible.builtin.unarchive:
+        src: "https://github.com/go-acme/lego/releases/download/v<{ automq-lego-version }>/lego_v<{ automq-lego-version }>_linux_amd64.tar.gz"
+        dest: /usr/local/bin
+        remote_src: true
+        include: [lego]
+        mode: "0755"
+        creates: /usr/local/bin/lego
+      when: automq_cert_issuer | bool
+
+    # The Cloudflare token reaches exactly one host. Nodes 1 and 2 consume the
+    # published certificate and never hold a credential that can edit DNS, so
+    # compromising a public broker does not yield the zone.
+    - name: Write the issuer's ACME environment
+      ansible.builtin.copy:
+        dest: /etc/automq/cert.env
+        mode: "0600"
+        content: |
+          CLOUDFLARE_DNS_API_TOKEN={{ lookup('env', 'COLORS_PAR_CLOUDFLARE_API_TOKEN') }}
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      when: automq_cert_issuer | bool
+      no_log: true
+
+    - name: Issue or renew the certificate
+      ansible.builtin.shell: |
+        set -a; . /etc/automq/cert.env; set +a
+        /usr/local/bin/automq-cert '<{ certificate-names-csv }>'
+      args:
+        executable: /bin/bash
+      when: automq_cert_issuer | bool
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: cert_run
+      changed_when: "'cert: published' in cert_run.stdout"
+
+    - name: Install the certificate and build the keystore
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-cert-deploy {{ automq_node_id }} <{ bootstrap-internal }>
+      register: cert_deploy
+      changed_when: "'installed' in cert_deploy.stdout or 'restarted' in cert_deploy.stdout"
+
+    # --------------------------------------------------------------- genesis
+
+    # Decided once, from evidence rather than from a marker: this run is the
+    # cluster's genesis if NO node has ever completed a format. An earlier
+    # design claimed a genesis marker up front, and when the format that
+    # followed failed, every later converge read "already initialized" and
+    # formatted without bootstrap credentials — producing a cluster whose
+    # metadata log had no SCRAM records and could not be repaired by
+    # re-running. A marker may record that something happened; only evidence
+    # that it happened may decide what to do next.
+    - name: Decide whether this run is the cluster's genesis
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-state
+      register: genesis_state
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Format the metadata storage
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-format {{ automq_node_id }}
+        {{ (not (genesis_state.stdout | from_json).initialized) | lower }}
+      # The disk-loss recovery override is documented as a one-run environment
+      # variable, so it has to reach the remote command — the play environment
+      # carries only the storage credentials, and without this line setting it
+      # on the workstation changes nothing at all.
+      environment:
+        AUTOMQ_ALLOW_REFORMAT: "{{ lookup('env', 'AUTOMQ_ALLOW_REFORMAT') | default('false', true) }}"
+      register: format_run
+      changed_when: "'format: complete' in format_run.stdout"
+
+    # Provenance only, written after the formats actually succeeded.
+    - name: Record the genesis epoch
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-claim
+      register: genesis_claim
+      changed_when: "'\"claimed\": true' in genesis_claim.stdout"
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    # ----------------------------------------------------------------- start
+
+    - name: Start the broker
+      ansible.builtin.command:
+        cmd: docker compose --env-file /etc/automq/.env -f /etc/automq/compose.yml up -d
+      register: compose_up
+      changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr"
+
+    # `docker compose up -d` does NOT recreate a container because the contents
+    # of a bind-mounted file changed — Compose compares its own service
+    # definition, not the bytes behind the mount. Without this, a listener,
+    # ACL, storage, heap or retention edit renders cleanly, reports a
+    # successful converge, and the JVM keeps running the old configuration.
+    #
+    # throttle: 1 because these are combined broker+controller nodes: restarting
+    # them together destroys the KRaft majority. Ansible is a single
+    # orchestrator, so ordering here is real; the object-store lease exists for
+    # the timer path, where nothing coordinates the nodes.
+    - name: Restart brokers whose configuration changed
+      ansible.builtin.command:
+        cmd: docker restart automq
+      when: render_config.changed and not compose_up.changed
+      throttle: 1
+      changed_when: true
+
+    - name: Wait for the broker to answer after a configuration change
+      ansible.builtin.command: >-
+        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
+        --bootstrap-server {{ automq_vpc_ip }}:<{ internal-port }>
+        --command-config /etc/automq/admin.properties
+      register: config_restart_ready
+      until: config_restart_ready.rc == 0
+      retries: 40
+      delay: 15
+      changed_when: false
+      when: render_config.changed and not compose_up.changed
+      throttle: 1
+
+    - name: Wait for the broker to answer
+      ansible.builtin.command: >-
+        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
+        --bootstrap-server {{ automq_vpc_ip }}:<{ internal-port }>
+        --command-config /etc/automq/admin.properties
+      register: broker_ready
+      until: broker_ready.rc == 0
+      retries: 40
+      delay: 15
+      changed_when: false
+
+    # ----------------------------------------------------------------- gates
+
+    # The plan promised drift detection by AUTHENTICATING with each desired
+    # credential, because a SCRAM credential cannot be compared any other way —
+    # kafka-configs --describe exposes iterations and salt, never anything
+    # comparable to a plaintext. Genesis bootstrap alone does not cover a
+    # rotated password or a principal renamed in desired state.
+    - name: Reconcile the SCRAM credentials
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-scram <{ bootstrap-internal }>
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: scram_reconcile
+      changed_when: "'scram: upserted' in scram_reconcile.stdout"
+
+    - name: Apply the client ACLs
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-acl <{ bootstrap-internal }>
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: acl_run
+      changed_when: false
+
+    - name: Run the on-host gates
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-smoke <{ bootstrap-internal }>
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: smoke
+      changed_when: false
+
+    - name: Report the gates
+      ansible.builtin.debug:
+        msg: "{{ smoke.stdout_lines }}"
+      run_once: true
+
+    # The marker means "this cluster was proved", which is why it is written
+    # here and not when the containers started.
+    - name: Mark the storage ready
+      ansible.builtin.command: /usr/local/bin/automq-store ready
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: ready_mark
+      changed_when: "'ready: written' in ready_mark.stdout"
+
+    # --------------------------------------------------------------- timers
+
+    - name: Install the certificate timers
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/automq-{{ item }}"
+        mode: "0644"
+      loop:
+        - cert-deploy.service
+        - cert-deploy.timer
+
+    - name: Install the renewal timer on the issuer
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/automq-{{ item }}"
+        mode: "0644"
+      loop:
+        - cert-renew.service
+        - cert-renew.timer
+      when: automq_cert_issuer | bool
+
+    - name: Enable the certificate deployment timer
+      ansible.builtin.systemd_service:
+        name: automq-cert-deploy.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable the renewal timer on the issuer
+      ansible.builtin.systemd_service:
+        name: automq-cert-renew.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: automq_cert_issuer | bool

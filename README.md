@@ -1,9 +1,14 @@
 # automq
 
-A green-only [getcolors](https://www.getcolors.ai/) Package Skill that
-provisions a three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster on
-Vultr: the Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles,
-and Cloudflare R2 as the storage tier.
+A [getcolors](https://www.getcolors.ai/) Package Skill that provisions a
+three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster on Vultr: the
+Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles, and
+Cloudflare R2 as the storage tier.
+
+It ships in all three colours — `green/` (Clojure), `red/` (TypeScript) and
+`blue/` (Python) — which render byte-identical artifacts from one `colors.yml`.
+Pick whichever runtime your project already has; nothing else about the
+deployment changes.
 
 The reference deployment is [`automq-vultr`](https://github.com/getcolors/automq-vultr).
 
@@ -23,11 +28,14 @@ rather than assumed away.
 
 ```sh
 npx skills add getcolors/automq
-cp .agents/skills/package-automq-green/green ./green
+cp .agents/skills/package-automq-green/green ./green   # or -red/red, or -blue/blue
 chmod +x green
 ./green build              # renders .colors/ — contacts nothing
 ./green create --dry-run   # walks the DAG with no side effects
 ```
+
+The installed launcher is a **copy** of the payload, not a symlink: after
+`npx skills update -p`, copy it again or the project keeps running the old pin.
 
 `build` and `--dry-run` work on a fresh checkout with an empty environment,
 which makes them the safe way to check a `colors.yml` edit.
@@ -96,14 +104,19 @@ Over `ssh <profile>` (node 0) or `ssh <profile>-<n>`:
 ## Development
 
 ```sh
-bb test              # unit tests
-bb golden            # two fixtures: keygen and opt-out keypair modes
-./scripts/launcher.sh
+cd green && bb test && bb golden     # unit tests; two fixtures: keygen and opt-out
+cd red   && bun test && bun run typecheck
+cd blue  && uv run pytest
+./scripts/parity.sh                  # the three colours, byte for byte
+./scripts/launcher.sh                # the three copied payloads
 ```
 
 `bb golden:accept` regenerates the committed output — only after reading the
-diff. Use `AUTOMQ_LIB_ROOT`, `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` to develop
-across repository boundaries.
+diff. `scripts/parity.sh` is the net the goldens cannot be: it renders both
+fixtures in all three colours and diffs the trees, and it diffs the template
+copies each colour carries. Use `AUTOMQ_LIB_ROOT` (the repository root, for
+any colour), `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` to develop across repository
+boundaries.
 
 ## License
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The regression net against committed goldens: render every fixture and diff.
+# Green's regression net against the committed goldens: render every fixture and
+# diff against committed output. scripts/parity.sh is the net across colours.
 #
 # Two fixtures, because the SSH Keypair Standard has two modes and a package
 # conforms only if both hold. `colors.yml` is keygen mode (no vultr-ssh-keys):
@@ -26,7 +27,7 @@ for variant in colors optout; do
   fixture="$tmp/$variant.yml"
   sed "s#WORKDIR#$tmp/work#" "$root/test/fixtures/$variant.yml" > "$fixture"
   sed -i "s#^workdir: .colors#workdir: $tmp/work#" "$fixture"
-  (cd "$root" && AUTOMQ_LIB_ROOT="$root" ./green build -f "$fixture" >/dev/null)
+  (cd "$root/green" && AUTOMQ_LIB_ROOT="$root" ./green build -f "$fixture" >/dev/null)
 
   profile=$(sed -n 's/^profile: //p' "$fixture")
   actual="$tmp/work/$profile"

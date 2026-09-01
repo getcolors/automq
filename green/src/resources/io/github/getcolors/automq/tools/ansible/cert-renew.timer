@@ -1,0 +1,12 @@
+[Unit]
+Description=Renew the AutoMQ certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:00:00
+# Let's Encrypt asks that renewals be spread out, and a fixed minute across a
+# fleet is how a provider gets a thundering herd.
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -30,10 +30,16 @@
 
 (def ^:private automq-git-url "https://github.com/getcolors/automq.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
+(def ^:private once-git-url "https://github.com/getcolors/once.git")
 
+;; `deps-root` is the colour subdirectory a repository keeps its library in.
+;; It qualifies both coordinate shapes: a working tree points at
+;; `<root>/<deps-root>`, an immutable git dependency at `:deps/root`. A
+;; LIB_ROOT that named the repository root would resolve a directory with no
+;; deps.edn in it.
 (defn- lib-coord [env-var url sha deps-root]
   (if-let [root (System/getenv env-var)]
-    {:local/root root}
+    {:local/root (if deps-root (str (io/file root deps-root)) root)}
     (when sha
       (cond-> {:git/url url :git/sha sha}
         deps-root (assoc :deps/root deps-root)))))
@@ -43,8 +49,9 @@
 
 (def ^:private bootstrap-error
   (when (and (System/getProperty "babashka.version") (not resolved?))
-    (let [automq (lib-coord "AUTOMQ_LIB_ROOT" automq-git-url automq-sha nil)
-          green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)]
+    (let [automq (lib-coord "AUTOMQ_LIB_ROOT" automq-git-url automq-sha "green")
+          green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)
+          once (lib-coord "ONCE_LIB_ROOT" once-git-url nil "green")]
       (if-not automq
         (str "this launcher carries no automq pin.\n"
              "It has not been stamped by `bb pin`, which cannot run until the "
@@ -52,7 +59,8 @@
              "Point it at a checkout meanwhile: AUTOMQ_LIB_ROOT=/path/to/automq")
         (do ((requiring-resolve 'babashka.deps/add-deps)
              {:deps (cond-> {'io.github.getcolors/automq automq}
-                      green (assoc 'io.github.getcolors/green green))})
+                      green (assoc 'io.github.getcolors/green green)
+                      once (assoc 'io.github.getcolors/once once))})
             nil)))))
 
 (def ^:private load-error
