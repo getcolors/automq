@@ -99,7 +99,7 @@ thing on every workstation.
 ## Commands
 
 ```sh
-bb test              # 43 tests
+bb test              # 44 tests
 bb golden            # two fixtures: keygen and opt-out
 bb golden:accept     # only after reading the diff
 ./scripts/launcher.sh

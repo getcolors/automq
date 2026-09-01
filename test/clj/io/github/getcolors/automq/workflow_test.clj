@@ -27,6 +27,13 @@
           :automq/infrastructure :automq/ssh-cleanup]
          (chain :delete))))
 
+(deftest validate-answers-the-question-without-rendering-anything
+  ;; It must work on a fresh checkout with no keypair and no state. Falling
+  ;; through to the create chain would plan a compute stage that reads the
+  ;; machine public key, so the check would fail on exactly the case it exists
+  ;; to serve.
+  (is (= [] (chain :validate))))
+
 (deftest the-destroy-guard-is-desired-state-not-a-flag
   (let [errs (:green/err (workflow/start-step
                           {:green/event :delete :green/real? true

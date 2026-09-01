@@ -81,7 +81,17 @@
     env)))
 
 (defn wire-fn [step run-opts]
-  (if (= :delete (:green/event run-opts))
+  (case (:green/event run-opts)
+    ;; `validate` answers "would this run?" and must not render or plan
+    ;; anything to do it. Falling through to the create chain would call
+    ;; `tofu validate` on a compute stage that reads the machine public key —
+    ;; a file only a real create generates — so the check would fail on
+    ;; exactly the fresh checkout it exists to serve.
+    :validate
+    (case step
+      :automq/start [start-step])
+
+    :delete
     ;; The `~/.ssh/config` block goes before the destroy, the keypair after it.
     ;; A block that outlives its host is stale but harmless; a key that
     ;; predeceases its host locks the operator out of machines that still
@@ -97,6 +107,7 @@
       :automq/dns [tools/dns-step :automq/infrastructure]
       :automq/infrastructure [tools/infrastructure-step :automq/ssh-cleanup]
       :automq/ssh-cleanup [ssh/cleanup-step])
+
     (case step
       :automq/start [start-step :automq/infrastructure]
       :automq/infrastructure [tools/infrastructure-step :automq/ssh-config]
