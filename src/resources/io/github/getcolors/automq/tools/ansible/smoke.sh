@@ -40,6 +40,23 @@ voters=$(grep -o 'CurrentVoters:.*' <<<"$quorum" | grep -o '"id"' | wc -l || tru
 gate "controller quorum: $voters voters, leader $leader"
 
 # 3 — a round trip through object storage. RF=1 is deliberate: durability is R2.
+#
+# The topic is recreated, not reused. These gates run on every converge, and a
+# topic that survives from the last one still holds its records — so producing
+# 500 and consuming 500 reads the OLD 500 and the exact-match assertion fails
+# on a cluster that is working perfectly. A gate that only passes the first
+# time is not a gate. Deletion is asynchronous, so wait for the name to leave
+# the topic list before recreating it.
+if k kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN" \
+     --list 2>/dev/null | grep -qx "$TOPIC"; then
+  k kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN" \
+    --delete --topic "$TOPIC" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    k kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN" \
+      --list 2>/dev/null | grep -qx "$TOPIC" || break
+    sleep 2
+  done
+fi
 k kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN" \
   --create --if-not-exists --topic "$TOPIC" \
   --partitions <{ automq-topic-partitions }> --replication-factor 1 >/dev/null
