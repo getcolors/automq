@@ -65,6 +65,16 @@ for variant in colors optout; do
     echo "golden: $profile rendered an empty value into a tofu template" >&2; exit 1
   fi
 
+  # A Selmer tag that survived rendering is a typo or an unsupplied key, and
+  # an ellipsis inside a Jinja expression is documentation that will be parsed
+  # as code by whichever engine owns the delimiter. Both cost a converge.
+  if grep -rn '<{' "$actual"; then
+    echo "golden: $profile left an unrendered Selmer tag" >&2; exit 1
+  fi
+  if grep -rn '{{[^}]*…' "$actual"; then
+    echo "golden: $profile renders an ellipsis inside a Jinja expression" >&2; exit 1
+  fi
+
   # A build that reached the real ~/.ssh would leak the operator's home into
   # committed bytes and make the goldens workstation-specific.
   if grep -rq "$HOME/.ssh" "$actual"; then
