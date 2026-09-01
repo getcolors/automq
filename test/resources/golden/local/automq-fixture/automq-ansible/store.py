@@ -265,19 +265,48 @@ def cmd_ready(args):
 # -------------------------------------------------------------------- genesis
 
 
+def completed_nodes(s3, args):
+    """Node records that reached `format-complete`."""
+    done = []
+    paginator = s3.get_paginator("list_objects_v2")
+    prefix = key(args.profile, "nodes") + "/"
+    for page in paginator.paginate(Bucket=args.ops_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            rec = get_json(s3, args.ops_bucket, obj["Key"]) or {}
+            if rec.get("phase") == "complete":
+                done.append(rec.get("node"))
+    return done
+
+
 def cmd_genesis_state(args):
     """Whether this cluster has ever been initialized.
 
-    Genesis is a property of the cluster, not of a node: the first converge
-    formats every voter with bootstrap records, and every later node is a
-    replacement that must catch up from the quorum instead.
+    Derived from whether any node has COMPLETED a format — never from whether
+    a genesis marker was claimed. Claiming first cost this package a cluster:
+    a converge claimed genesis, failed during the format, and every later run
+    then read "already initialized" and formatted its nodes WITHOUT bootstrap
+    credentials. The result was a metadata log with no SCRAM records at all,
+    which no amount of re-running could repair — the only symptom being
+    "Authentication failed ... invalid credentials" from every principal,
+    including ones nothing had ever changed.
+
+    The rule that avoids it: a marker may record that something happened, but
+    only evidence that it happened may be used to decide what to do next.
     """
     s3 = client(args.endpoint, args.region)
-    g = get_json(s3, args.ops_bucket, key(args.profile, "genesis"))
-    print(json.dumps({"initialized": bool(g), "epoch": (g or {}).get("epoch")}))
+    done = completed_nodes(s3, args)
+    g = get_json(s3, args.ops_bucket, key(args.profile, "genesis")) or {}
+    print(json.dumps({"initialized": bool(done),
+                      "formatted_nodes": sorted(n for n in done if n is not None),
+                      "epoch": g.get("epoch")}))
 
 
 def cmd_genesis_claim(args):
+    """Record the genesis epoch, for provenance only.
+
+    Called AFTER the formats succeed. Nothing decides anything from this
+    marker; it exists so an operator can see when the cluster was born.
+    """
     s3 = client(args.endpoint, args.region)
     payload = {
         "schema": SCHEMA,

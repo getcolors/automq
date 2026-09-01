@@ -268,22 +268,35 @@
 
     # --------------------------------------------------------------- genesis
 
-    # Decided once, before any node formats. Claiming here rather than after
-    # the formats is what makes a re-run after a partial failure answer the
-    # same question the same way.
+    # Decided once, from evidence rather than from a marker: this run is the
+    # cluster's genesis if NO node has ever completed a format. An earlier
+    # design claimed a genesis marker up front, and when the format that
+    # followed failed, every later converge read "already initialized" and
+    # formatted without bootstrap credentials — producing a cluster whose
+    # metadata log had no SCRAM records and could not be repaired by
+    # re-running. A marker may record that something happened; only evidence
+    # that it happened may decide what to do next.
     - name: Decide whether this run is the cluster's genesis
-      ansible.builtin.command: /usr/local/bin/automq-store genesis-claim
-      register: genesis_claim
-      changed_when: "'\"claimed\": true' in genesis_claim.stdout"
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-state
+      register: genesis_state
+      changed_when: false
       run_once: true
       delegate_to: "{{ groups['automq'] | first }}"
 
     - name: Format the metadata storage
       ansible.builtin.command: >-
         /usr/local/bin/automq-format {{ automq_node_id }}
-        {{ (genesis_claim.stdout | from_json).claimed | lower }}
+        {{ (not (genesis_state.stdout | from_json).initialized) | lower }}
       register: format_run
       changed_when: "'format: complete' in format_run.stdout"
+
+    # Provenance only, written after the formats actually succeeded.
+    - name: Record the genesis epoch
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-claim
+      register: genesis_claim
+      changed_when: "'\"claimed\": true' in genesis_claim.stdout"
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
 
     # ----------------------------------------------------------------- start
 
