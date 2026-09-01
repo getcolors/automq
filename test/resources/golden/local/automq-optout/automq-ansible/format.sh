@@ -27,6 +27,11 @@ NODE_ID="${1:?node id required}"
 GENESIS="${2:?genesis flag required}"
 META=/var/lib/automq/metadata/meta.properties
 KAFKA=/opt/automq/kafka/bin
+# The path INSIDE the container. The host's /etc/automq/server.properties is
+# bind-mounted to this location, and kafka-storage.sh runs in the container —
+# handing it the host path fails with NoSuchFileException on a file that very
+# much exists, one namespace away.
+CONTAINER_CONFIG=/opt/automq/kafka/config/kraft/server.properties
 STORE="/usr/local/bin/automq-store"
 
 . /etc/automq/secrets/secrets.env
@@ -71,7 +76,7 @@ fi
 
 "$STORE" format-record --node "$NODE_ID" --phase intent >/dev/null
 
-args=(--cluster-id "VrUQI4OSR0y5vnTrGiKsxQ" --config /etc/automq/server.properties)
+args=(--cluster-id "VrUQI4OSR0y5vnTrGiKsxQ" --config "$CONTAINER_CONFIG")
 
 if [ "$GENESIS" = "true" ]; then
   # Genesis. One salt per principal, computed once on node 0 and shared, so
@@ -86,7 +91,7 @@ else
 fi
 
 docker run --rm \
-  -v /etc/automq/server.properties:/opt/automq/kafka/config/kraft/server.properties:ro \
+  -v /etc/automq/server.properties:"$CONTAINER_CONFIG":ro \
   -v /var/lib/automq:/var/lib/automq \
   --entrypoint "$KAFKA/kafka-storage.sh" \
   "automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f" format "${args[@]}"
