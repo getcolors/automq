@@ -92,6 +92,25 @@ else
   ok "the client principal cannot write outside colors-"
 fi
 
+# --- 10a: a consumer group with committed offsets, established BEFORE the
+# outage. __consumer_offsets is replication factor 1 like every other internal
+# topic, so the partition holding this group's offsets can be led by the broker
+# about to be killed — which is exactly the case worth testing.
+#
+# `kcat -G <group> <topic>` takes the topic POSITIONALLY and replaces -C. The
+# first version of this gate wrote `-C -t <topic> -G <group>`, which consumes
+# nothing, commits nothing, and then fails on an assertion about the group.
+group="colors-survivor"
+kc -G "$group" "colors-acceptance" -o beginning -e -q -c 50 >/dev/null 2>&1
+committed_before=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
+  --describe --group $group" 2>/dev/null | awk '$1==g && $4 ~ /^[0-9]+$/ { n += $4 } END { print n+0 }' g="$group")
+if [ "${committed_before:-0}" -gt 0 ]; then
+  ok "consumer group $group committed offsets (sum ${committed_before}) before the outage"
+else
+  bad "consumer group $group committed no offsets before the outage"
+fi
+
 # --- 9: targeted failover -----------------------------------------------------
 #
 # The partition is chosen, not assumed. Unkeyed records spread over six
@@ -160,14 +179,19 @@ else
     || bad "node $LAST did not re-register and catch up within 600s"
 fi
 
-# --- 10: consumer groups survive the same class of outage ---------------------
-group="colors-survivor"
-kc -C -t "colors-acceptance" -G "$group" -o beginning -e -q -c 50 >/dev/null 2>&1
-offsets=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-consumer-groups.sh \
+# --- 10b: the group survived the outage ---------------------------------------
+#
+# The claim being tested is that committed offsets on an RF=1
+# __consumer_offsets partition come back after the broker leading it dies —
+# not merely that a group can commit at all.
+committed_after=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094 --command-config /etc/automq/admin.properties \
-  --describe --group $group" 2>/dev/null | grep -c "colors-acceptance")
-[ "${offsets:-0}" -gt 0 ] && ok "consumer group $group committed offsets and can be described" \
-  || bad "consumer group $group has no committed offsets after the outage"
+  --describe --group $group" 2>/dev/null | awk '$1==g && $4 ~ /^[0-9]+$/ { n += $4 } END { print n+0 }' g="$group")
+if [ "${committed_after:-0}" -ge "${committed_before:-0}" ] && [ "${committed_after:-0}" -gt 0 ]; then
+  ok "consumer group $group kept its committed offsets across the outage (${committed_after})"
+else
+  bad "consumer group $group lost committed offsets across the outage (${committed_before:-0} -> ${committed_after:-0})"
+fi
 
 # --- 13: controller authentication survives a restart -------------------------
 #
