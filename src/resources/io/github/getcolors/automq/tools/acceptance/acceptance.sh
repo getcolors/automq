@@ -164,7 +164,20 @@ else
   ok "partition $victim_partition of $TOPIC is led by node $victim"
 
   before=$(seq 1 100 | sed "s/^/before-$RUN-/")
-  echo "$before" | kc -P -t "$TOPIC" -p "$victim_partition" 2>/dev/null
+  # Verify the produce, rather than assuming it. If this silently fails, the
+  # survival check later reports "0 of 100 survived" — a data-loss claim about
+  # records that were never written.
+  if ! echo "$before" | kc -P -t "$TOPIC" -p "$victim_partition" 2>/dev/null; then
+    bad "could not produce the pre-failure records to partition $victim_partition"
+  fi
+  produced=0
+  for _ in $(seq 1 12); do
+    produced=$(kc -C -t "$TOPIC" -p "$victim_partition" -o beginning -e -q 2>/dev/null | grep -c "^before-$RUN-")
+    [ "${produced:-0}" -ge 100 ] && break
+    sleep 5
+  done
+  [ "${produced:-0}" -ge 100 ] && ok "100 pre-failure records are readable before the kill" \
+    || bad "only ${produced:-0} of 100 pre-failure records were readable before the kill"
 
   on "$victim" "sudo docker stop automq" >/dev/null 2>&1
   killed_at=$(date +%s)
@@ -189,9 +202,21 @@ else
 
   # Nothing written before the kill may be missing afterwards. This is the
   # claim S3-backed storage actually makes, and the one worth checking.
-  kept=$(kc -C -t "$TOPIC" -p "$victim_partition" -o beginning -e -q 2>/dev/null | grep -c "^before-$RUN-")
-  [ "${kept:-0}" -eq 100 ] && ok "all 100 pre-failure records survived the leader's death" \
-    || bad "only ${kept:-0} of 100 pre-failure records survived"
+  #
+  # Retried, because a partition whose leader just died is briefly not
+  # fetchable while it is reassigned, and a single read at the wrong moment
+  # returns nothing. Reporting that as "0 of 100 survived" is a data-loss
+  # claim about records that are sitting safely in object storage — the most
+  # alarming thing this gate could say, and it would be false.
+  kept=0
+  for _ in $(seq 1 24); do
+    n=$(kc -C -t "$TOPIC" -p "$victim_partition" -o beginning -e -q 2>/dev/null | grep -c "^before-$RUN-")
+    [ "${n:-0}" -gt "$kept" ] && kept=$n
+    [ "$kept" -ge 100 ] && break
+    sleep 5
+  done
+  [ "$kept" -ge 100 ] && ok "all 100 pre-failure records survived the leader's death" \
+    || bad "only ${kept} of 100 pre-failure records were readable within 120s of the failover"
 
   on "$victim" "sudo docker start automq" >/dev/null 2>&1
   trap - EXIT INT TERM
