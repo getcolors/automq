@@ -20,12 +20,31 @@
     (is (nil? (ssh-config/foreign-stanza-line lines "automq-vultr")))
     (is (= 4 (ssh-config/foreign-stanza-line lines "automq-vultr-2")))))
 
-(deftest our-own-managed-block-is-not-foreign
+(deftest our-own-managed-block-is-not-foreign-for-any-alias-in-it
+  ;; One block, marked with the profile, holding a stanza per node. Deriving
+  ;; the marker from the stanza being searched — which a single-node package
+  ;; can get away with — makes the check hunt for `# BEGIN automq-vultr-0 …`,
+  ;; never find it, and refuse to converge because of a block this package
+  ;; wrote itself.
   (let [lines (str/split-lines
                (str "# BEGIN automq-vultr ANSIBLE MANAGED BLOCK\n"
                     "Host automq-vultr\n  HostName 1.2.3.4\n"
-                    "# END automq-vultr ANSIBLE MANAGED BLOCK\n"))]
-    (is (nil? (ssh-config/foreign-stanza-line lines "automq-vultr")))))
+                    "Host automq-vultr-0\n  HostName 1.2.3.4\n"
+                    "Host automq-vultr-1\n  HostName 1.2.3.5\n"
+                    "Host automq-vultr-2\n  HostName 1.2.3.6\n"
+                    "# END automq-vultr ANSIBLE MANAGED BLOCK\n"))
+        marker "automq-vultr"]
+    (doseq [a (ssh-config/aliases opts)]
+      (is (nil? (ssh-config/foreign-stanza-line lines a marker))
+          (str a " inside our own block was read as foreign")))))
+
+(deftest a-node-stanza-outside-our-block-is-still-foreign
+  (let [lines (str/split-lines
+               (str "# BEGIN automq-vultr ANSIBLE MANAGED BLOCK\n"
+                    "Host automq-vultr\n  HostName 1.2.3.4\n"
+                    "# END automq-vultr ANSIBLE MANAGED BLOCK\n"
+                    "Host automq-vultr-1\n  HostName 9.9.9.9\n"))]
+    (is (= 5 (ssh-config/foreign-stanza-line lines "automq-vultr-1" "automq-vultr")))))
 
 (deftest a-global-option-above-the-first-host-blocks-the-run
   ;; The block is inserted at BOF, so it would capture such an option into one

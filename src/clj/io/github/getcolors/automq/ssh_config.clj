@@ -73,16 +73,26 @@
 
 (defn foreign-stanza-line
   "The 1-based line number of a `Host <alias>` stanza that this package did not
-  write, or nil. Lines between any of our own markers are ours and are skipped."
-  [lines alias]
-  (let [{:keys [begin end]} (owned-markers alias)]
-    (loop [[line & more] lines n 1 inside? false]
-      (cond
-        (nil? line) nil
-        (contains? begin (str/trim line)) (recur more (inc n) true)
-        (contains? end (str/trim line)) (recur more (inc n) false)
-        (and (not inside?) (some #{alias} (host-patterns line))) n
-        :else (recur more (inc n) inside?)))))
+  write, or nil. Lines between our own markers are ours and are skipped.
+
+  `alias` is the stanza being searched for; `marker-alias` names the managed
+  block, and the two are not the same thing. This deployment writes ONE block,
+  marked with the profile, containing a `Host` stanza for the profile and for
+  every node. Deriving the marker from the stanza being searched — the obvious
+  reading, and the one a single-node package can get away with — makes the
+  check look for `# BEGIN automq-vultr-0 …`, never find it, conclude it is
+  outside a managed block, and refuse to converge because of a block this
+  package wrote itself."
+  ([lines alias] (foreign-stanza-line lines alias alias))
+  ([lines alias marker-alias]
+   (let [{:keys [begin end]} (owned-markers marker-alias)]
+     (loop [[line & more] lines n 1 inside? false]
+       (cond
+         (nil? line) nil
+         (contains? begin (str/trim line)) (recur more (inc n) true)
+         (contains? end (str/trim line)) (recur more (inc n) false)
+         (and (not inside?) (some #{alias} (host-patterns line))) n
+         :else (recur more (inc n) inside?))))))
 
 (defn leading-option-line
   "The 1-based line number of an option standing above the first `Host` or
@@ -112,9 +122,10 @@
   [opts]
   (let [f (config-path)]
     (when (.isFile f)
-      (let [lines (str/split-lines (slurp f))]
+      (let [lines (str/split-lines (slurp f))
+            marker (host-alias opts)]
         (when-let [[alias n] (some (fn [a]
-                                     (when-let [n (foreign-stanza-line lines a)]
+                                     (when-let [n (foreign-stanza-line lines a marker)]
                                        [a n]))
                                    (aliases opts))]
         (str "refusing to manage " (.getPath f) ": it already declares "
