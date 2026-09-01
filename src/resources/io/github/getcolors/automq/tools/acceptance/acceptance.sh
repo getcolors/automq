@@ -20,6 +20,11 @@ NODES=<{ node-count }>
 LAST=$((NODES - 1))
 pass=0
 fail=0
+# Every record and group this run creates is tagged with it. These gates run on
+# every converge against a cluster that keeps its data, so a gate that counts
+# "100 records" must count THIS run's hundred — otherwise it passes once and
+# then fails forever against a perfectly healthy cluster.
+RUN=$(date +%s)
 
 ok()   { pass=$((pass+1)); echo "  ok   — $*"; }
 bad()  { fail=$((fail+1)); echo "  FAIL — $*" >&2; }
@@ -100,7 +105,7 @@ fi
 # `kcat -G <group> <topic>` takes the topic POSITIONALLY and replaces -C. The
 # first version of this gate wrote `-C -t <topic> -G <group>`, which consumes
 # nothing, commits nothing, and then fails on an assertion about the group.
-group="<{ topic-prefix }>survivor"
+group="<{ topic-prefix }>survivor-$RUN"
 kc -G "$group" "<{ topic-prefix }>acceptance" -o beginning -e -q -c 50 >/dev/null 2>&1
 committed_before=$(on 0 "sudo docker exec automq /opt/automq/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server <{ bootstrap-internal }> --command-config /etc/automq/admin.properties \
@@ -132,7 +137,7 @@ if [ -z "$victim_partition" ]; then
 else
   ok "partition $victim_partition of $TOPIC is led by node $LAST"
 
-  before=$(seq 1 100 | sed 's/^/before-/')
+  before=$(seq 1 100 | sed "s/^/before-$RUN-/")
   echo "$before" | kc -P -t "$TOPIC" -p "$victim_partition" 2>/dev/null
 
   on "$LAST" "sudo docker stop automq" >/dev/null 2>&1
@@ -154,7 +159,7 @@ else
 
   # Nothing written before the kill may be missing afterwards. This is the
   # claim S3-backed storage actually makes, and the one worth checking.
-  kept=$(kc -C -t "$TOPIC" -p "$victim_partition" -o beginning -e -q 2>/dev/null | grep -c '^before-')
+  kept=$(kc -C -t "$TOPIC" -p "$victim_partition" -o beginning -e -q 2>/dev/null | grep -c "^before-$RUN-")
   [ "${kept:-0}" -eq 100 ] && ok "all 100 pre-failure records survived the leader's death" \
     || bad "only ${kept:-0} of 100 pre-failure records survived"
 
