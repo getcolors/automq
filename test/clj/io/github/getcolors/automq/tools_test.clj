@@ -1,5 +1,6 @@
 (ns io.github.getcolors.automq.tools-test
   (:require [cheshire.core :as json]
+            [clojure.string]
             [clojure.test :refer [deftest is testing]]
             [io.github.getcolors.automq.cluster :as cluster]
             [io.github.getcolors.automq.tools :as tools]))
@@ -65,6 +66,17 @@
                   data))
     (is (= "0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093"
            (:quorum-voters (tools/ansible-data (assoc opts :automq/params params)))))))
+
+(deftest the-compute-stage-renders-every-value-its-template-names
+  ;; A Selmer key that is absent renders as empty rather than failing, so the
+  ;; firewall rule shipped `port = ""` and only the provider rejected it.
+  (let [data (tools/infrastructure-data opts)]
+    (is (= 9092 (:kafka-port data)))
+    (is (= 3 (:node-count data)))
+    (is (= "automq-vultr" (:compute-name data)))
+    (is (every? #(not (clojure.string/blank? (str (get data %))))
+                [:kafka-port :node-count :compute-name :ssh-sources-hcl
+                 :kafka-sources-hcl]))))
 
 (deftest cidr-lists-survive-both-yaml-and-string-forms
   (is (= ["0.0.0.0/0" "::/0"] (tools/cidrs opts :vultr-ssh-sources)))

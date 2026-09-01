@@ -63,6 +63,11 @@
          :ssh-keygen (validate/keygen? opts)
          :node-count (cluster/node-count opts)
          :compute-name (cluster/compute-name opts)
+         ;; The firewall rule renders this. A Selmer key that is absent
+         ;; renders as empty rather than failing, so omitting it produced
+         ;; `port = ""` — which survives build, golden, dry-run and validate,
+         ;; and is rejected only by the provider on a real apply.
+         :kafka-port (cluster/kafka-port opts)
          :ssh-sources-hcl (tofu/hcl-list (cidrs opts :vultr-ssh-sources))
          :kafka-sources-hcl (tofu/hcl-list (cidrs opts :vultr-kafka-sources))))
 

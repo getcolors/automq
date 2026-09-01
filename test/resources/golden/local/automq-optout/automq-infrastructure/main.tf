@@ -20,12 +20,17 @@ locals {
 # Nothing on those ports is ever published: the firewall below opens 22 and the
 # Kafka port only, and the brokers bind 9093/9094 to the address handed out
 # here. A VPC rather than the public interface is what makes that possible.
-resource "vultr_vpc2" "cluster" {
-  region        = "ams"
-  description   = "automq-optout"
-  ip_type       = "v4"
-  ip_block      = local.vpc_block
-  prefix_length = local.vpc_prefix
+#
+# `vultr_vpc`, not `vultr_vpc2`. Vultr has retired the VPC 2.0 API — the
+# account returns 404 for /v2/vpc2 and 200 for /v2/vpcs — while the terraform
+# provider still ships the `vultr_vpc2` resource and its documentation. The
+# provider source is therefore not evidence that an endpoint exists; only the
+# live API is.
+resource "vultr_vpc" "cluster" {
+  region         = "ams"
+  description    = "automq-optout"
+  v4_subnet      = local.vpc_block
+  v4_subnet_mask = local.vpc_prefix
 }
 
 # Every label derives from one resolved name (Compute Name Standard §3), which
@@ -53,7 +58,7 @@ resource "vultr_firewall_rule" "kafka" {
   for_each          = toset(local.kafka_sources)
   firewall_group_id = vultr_firewall_group.cluster.id
   protocol          = "tcp"
-  port              = ""
+  port              = "9092"
   ip_type           = strcontains(each.value, ":") ? "v6" : "v4"
   subnet            = split("/", each.value)[0]
   subnet_size       = tonumber(split("/", each.value)[1])
@@ -71,7 +76,7 @@ resource "vultr_instance" "node" {
   plan              = "vc2-4c-8gb"
   os_id             = 2284
   firewall_group_id = vultr_firewall_group.cluster.id
-  vpc2_ids          = [vultr_vpc2.cluster.id]
+  vpc_ids           = [vultr_vpc.cluster.id]
   # SSH keys are ids already in the account, and ForceNew: changing the key set
   # destroys and recreates the instance instead of re-authorizing it. Rotation
   # is a rebuild, never an edit on a machine whose disk you intend to keep.

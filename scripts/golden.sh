@@ -57,6 +57,14 @@ for variant in colors optout; do
     fi
   done
 
+  # An absent Selmer key renders as an empty string rather than failing, so a
+  # template that names a value nothing supplies produces `port = ""` — valid
+  # HCL, accepted by build, golden, dry-run and validate alike, and rejected
+  # only by the provider on a real apply. Catch the whole class here.
+  if grep -rEn '=[[:space:]]*""$' "$actual"/*/*.tf; then
+    echo "golden: $profile rendered an empty value into a tofu template" >&2; exit 1
+  fi
+
   # A build that reached the real ~/.ssh would leak the operator's home into
   # committed bytes and make the goldens workstation-specific.
   if grep -rq "$HOME/.ssh" "$actual"; then
