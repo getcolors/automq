@@ -19,6 +19,12 @@ services:
     volumes:
       - /etc/automq/server.properties:/opt/automq/kafka/config/kraft/server.properties:ro
       - /etc/automq/tls:/etc/automq/tls:ro
+      # The admin and client property files are read by kafka CLI tools running
+      # INSIDE this container — the healthcheck below, the smoke gates, and
+      # every operator command. Mounted at the same path they have on the host
+      # so that one string means one file in both namespaces.
+      - /etc/automq/admin.properties:/etc/automq/admin.properties:ro
+      - /etc/automq/client.properties:/etc/automq/client.properties:ro
       - /var/lib/automq:/var/lib/automq
     command:
       - /opt/automq/kafka/bin/kafka-server-start.sh
