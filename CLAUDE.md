@@ -63,6 +63,37 @@ the pinned tag** when bumping `automq-image`.
   `format-complete`. A single record written before the format would make a
   converge that died mid-format indistinguishable from disk loss on the next
   run — and those demand opposite responses.
+- **There are two firewalls, and ping cannot see the one that matters.** The
+  Vultr Ubuntu image ships **ufw enabled** with a single `22/tcp` rule. It
+  passes ICMP, so every node pings every other node while every inter-node TCP
+  connection is dropped: the quorum never elects and the broker half dies sixty
+  seconds later blaming itself. The provider's firewall group is desired state
+  in the compute stage; ufw is converged by the play. Both are required, and
+  the provider group alone proves nothing because the host drops the packet
+  after it gets through. Test raw TCP across the VPC, never ping.
+- **A marker is not evidence.** Genesis is decided by whether any node has a
+  **format-complete** record, never by a marker written before the format. An
+  earlier design claimed the marker first; the converge that followed failed,
+  and every later run formatted without SCRAM bootstrap records — producing a
+  cluster that could never authenticate anyone and could not be repaired,
+  because `kafka-configs --bootstrap-controller` answers
+  `UnsupportedEndpointTypeException`.
+- **The secret bundle belongs to the cluster, not to node 0.** It is sourced
+  from whichever node still holds it, and generation is refused when any node
+  has a format-complete record. Regenerating it on a rebuilt node 0 would push
+  new passwords and SCRAM salts over working ones while the metadata log kept
+  the old.
+- **`docker compose up -d` does not restart on a changed bind-mounted file.**
+  Compose compares its own service definition, not the bytes behind the mount,
+  so a configuration edit would converge cleanly while the JVM ran the old
+  config. A changed render triggers a throttled restart.
+- **Gates must pass twice.** They run on every converge against a cluster that
+  keeps its data, so anything counting absolute totals — or assuming which node
+  leads a partition — passes the first time and fails forever after. Recreate
+  the gate's topic and tag records per run.
+- **Never run `build` while a converge is in flight.** `.colors/` is live input
+  to the running stage; re-rendering it under a running script makes bash
+  resume mid-token and report a syntax error in a valid file.
 - **Exit codes are not evidence.** `automq-smoke` asks the cluster what it has:
   every broker registered, a quorum with a leader, 500 records back out
   verbatim, objects actually present in both buckets, a wrong password refused,
