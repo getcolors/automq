@@ -1,14 +1,20 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["package-automq-blue", "blue"]
+#
+# [tool.uv.sources]
+# package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "f0ba9d13e926d58fcc77b99130de62866b4b32a1", subdirectory = "blue" }
+# blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
+#
+# [tool.uv]
+# override-dependencies = ["blue @ git+https://github.com/getcolors/blue.git@290f313ead5ca162875c33a049c880da017eae09"]
 # ///
 #
 # Managed by `bb pin` — do not edit by hand, and never invent a SHA.
 #
-# UNPINNED: this payload has never been stamped. `bb pin` cannot run until
-# the automq repository has been pushed; until then, point the launcher at a
-# checkout with AUTOMQ_LIB_ROOT=/path/to/automq
+# Stamped by `bb pin`. AUTOMQ_LIB_ROOT=/path/to/automq still overrides the
+# pin with a working tree.
 """Thin launcher for package-automq-blue.
 
 This file is both the skill payload and the repository entry point —
