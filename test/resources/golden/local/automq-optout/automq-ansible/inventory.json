@@ -1,0 +1,40 @@
+{
+  "all" : {
+    "children" : {
+      "automq" : {
+        "hosts" : {
+          "automq-optout-0" : {
+            "ansible_host" : "192.0.2.10",
+            "ansible_user" : "root",
+            "automq_advertised_listeners" : "INTERNAL://10.40.0.10:9094,EXTERNAL://b0.automq.example.com:9092",
+            "automq_broker_name" : "b0.automq.example.com",
+            "automq_cert_issuer" : true,
+            "automq_listeners" : "CONTROLLER://10.40.0.10:9093,INTERNAL://10.40.0.10:9094,EXTERNAL://0.0.0.0:9092",
+            "automq_node_id" : 0,
+            "automq_vpc_ip" : "10.40.0.10"
+          },
+          "automq-optout-1" : {
+            "ansible_host" : "192.0.2.11",
+            "ansible_user" : "root",
+            "automq_advertised_listeners" : "INTERNAL://10.40.0.11:9094,EXTERNAL://b1.automq.example.com:9092",
+            "automq_broker_name" : "b1.automq.example.com",
+            "automq_cert_issuer" : false,
+            "automq_listeners" : "CONTROLLER://10.40.0.11:9093,INTERNAL://10.40.0.11:9094,EXTERNAL://0.0.0.0:9092",
+            "automq_node_id" : 1,
+            "automq_vpc_ip" : "10.40.0.11"
+          },
+          "automq-optout-2" : {
+            "ansible_host" : "192.0.2.12",
+            "ansible_user" : "root",
+            "automq_advertised_listeners" : "INTERNAL://10.40.0.12:9094,EXTERNAL://b2.automq.example.com:9092",
+            "automq_broker_name" : "b2.automq.example.com",
+            "automq_cert_issuer" : false,
+            "automq_listeners" : "CONTROLLER://10.40.0.12:9093,INTERNAL://10.40.0.12:9094,EXTERNAL://0.0.0.0:9092",
+            "automq_node_id" : 2,
+            "automq_vpc_ip" : "10.40.0.12"
+          }
+        }
+      }
+    }
+  }
+}

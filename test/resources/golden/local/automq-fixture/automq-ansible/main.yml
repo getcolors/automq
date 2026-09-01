@@ -1,0 +1,346 @@
+# Converge the AutoMQ cluster.
+#
+# The order below is the design, not a preference:
+#
+#   secrets before configuration   the SCRAM salt is bootstrapped into the
+#                                  metadata log at genesis, so it must exist
+#                                  and be identical everywhere first
+#   adoption before anything runs  a foreign bucket must fail the converge
+#                                  before a broker can write into it
+#   genesis decided once           three nodes each asking "does this cluster
+#                                  exist?" would race; node 0 decides and the
+#                                  answer is passed down
+#   certificate before start       the EXTERNAL listener will not open without
+#                                  a keystore
+#   gates before the ready marker  the marker means "this was proved", and it
+#                                  is what a later converge trusts
+#
+# Credentials appear only as lookup('env', …) expressions. They are written
+# literally into this file by the package and passed through untouched, so no
+# secret is ever in .colors/, in a golden, or in a template variable.
+- name: Converge AutoMQ
+  hosts: automq
+  gather_facts: true
+  any_errors_fatal: true
+  environment:
+    AUTOMQ_R2_ACCESS_KEY_ID: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}"
+    AUTOMQ_R2_SECRET_ACCESS_KEY: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}"
+
+  tasks:
+    # ---------------------------------------------------------------- host
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - openssl
+          - python3
+          # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
+          # PEP 668, and a managed package is one fewer thing to break on an
+          # unattended upgrade.
+          - python3-boto3
+        state: present
+        update_cache: true
+      retries: 3
+      delay: 10
+      register: apt_base
+      until: apt_base is succeeded
+
+    - name: Install Docker's apt key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Add the Docker repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine and the Compose plugin
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: true
+      retries: 3
+      delay: 10
+      register: apt_docker
+      until: apt_docker is succeeded
+
+    - name: Create the deployment directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /etc/automq, mode: "0755" }
+        - { path: /etc/automq/secrets, mode: "0700" }
+        - { path: /etc/automq/tls, mode: "0700" }
+        - { path: /var/lib/automq, mode: "0755" }
+        - { path: /var/lib/automq/metadata, mode: "0755" }
+
+    - name: Install the object-store helper and the operator commands
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "0755"
+      loop:
+        - { src: store.py, dest: /usr/local/lib/automq-store.py }
+        - { src: secrets.sh, dest: /usr/local/bin/automq-secrets }
+        - { src: render-config.sh, dest: /usr/local/bin/automq-render-config }
+        - { src: format.sh, dest: /usr/local/bin/automq-format }
+        - { src: acl.sh, dest: /usr/local/bin/automq-acl }
+        - { src: cert.sh, dest: /usr/local/bin/automq-cert }
+        - { src: cert-deploy.sh, dest: /usr/local/bin/automq-cert-deploy }
+        - { src: smoke.sh, dest: /usr/local/bin/automq-smoke }
+        - { src: status.sh, dest: /usr/local/bin/automq-status }
+        - { src: credential.sh, dest: /usr/local/bin/automq-credential }
+        - { src: rotate.sh, dest: /usr/local/bin/automq-rotate }
+
+    # One wrapper, so every caller passes the same bucket identity and no
+    # script grows its own copy of the endpoint.
+    - name: Install the store wrapper
+      ansible.builtin.copy:
+        dest: /usr/local/bin/automq-store
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          exec python3 /usr/local/lib/automq-store.py \
+            --profile 'automq-fixture' \
+            --cluster-id 'VrUQI4OSR0y5vnTrGiKsxQ' \
+            --endpoint 'https://fixture.r2.cloudflarestorage.com' \
+            --region 'auto' \
+            --data-bucket 'automq-fixture-data' \
+            --ops-bucket 'automq-fixture-ops' "$@"
+
+    - name: Write the storage credential environment for systemd units
+      ansible.builtin.copy:
+        dest: /etc/automq/store.env
+        mode: "0600"
+        content: |
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      no_log: true
+
+    # --------------------------------------------------------------- secrets
+
+    - name: Generate the cluster secrets on the issuer node
+      ansible.builtin.command: /usr/local/bin/automq-secrets
+      args:
+        creates: /etc/automq/secrets/secrets.env
+      when: automq_cert_issuer | bool
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Read the cluster secrets
+      ansible.builtin.slurp:
+        src: /etc/automq/secrets/secrets.env
+      register: cluster_secrets
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      no_log: true
+
+    # Distributed over the control connection rather than regenerated: the
+    # SCRAM salt bootstrapped into the metadata log has to be the same on every
+    # voter, and a per-node generation would produce three different clusters'
+    # worth of credentials for one set of principals.
+    - name: Distribute the cluster secrets
+      ansible.builtin.copy:
+        content: "{{ cluster_secrets.content | b64decode }}"
+        dest: /etc/automq/secrets/secrets.env
+        mode: "0600"
+      no_log: true
+
+    # -------------------------------------------------------------- adoption
+
+    - name: Adopt the object storage buckets
+      ansible.builtin.command: /usr/local/bin/automq-store adopt
+      register: adoption
+      changed_when: "'claimed' in adoption.stdout or 'completed' in adoption.stdout"
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Report the adoption outcome
+      ansible.builtin.debug:
+        msg: "storage: {{ adoption.stdout }}"
+      run_once: true
+
+    # --------------------------------------------------------- configuration
+
+    - name: Render the broker configuration template
+      ansible.builtin.template:
+        src: server.properties
+        dest: /etc/automq/server.properties.in
+        mode: "0644"
+
+    - name: Substitute the secrets into the configuration
+      ansible.builtin.command: /usr/local/bin/automq-render-config
+      changed_when: true
+
+    - name: Render the Compose file
+      ansible.builtin.template:
+        src: compose.yml
+        dest: /etc/automq/compose.yml
+        mode: "0644"
+
+    - name: Write the Compose environment
+      ansible.builtin.copy:
+        dest: /etc/automq/.env
+        mode: "0600"
+        content: |
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      no_log: true
+
+    # ---------------------------------------------------------- certificates
+
+    - name: Install lego
+      ansible.builtin.unarchive:
+        src: "https://github.com/go-acme/lego/releases/download/v5.4.0/lego_v5.4.0_linux_amd64.tar.gz"
+        dest: /usr/local/bin
+        remote_src: true
+        include: [lego]
+        mode: "0755"
+        creates: /usr/local/bin/lego
+      when: automq_cert_issuer | bool
+
+    # The Cloudflare token reaches exactly one host. Nodes 1 and 2 consume the
+    # published certificate and never hold a credential that can edit DNS, so
+    # compromising a public broker does not yield the zone.
+    - name: Write the issuer's ACME environment
+      ansible.builtin.copy:
+        dest: /etc/automq/cert.env
+        mode: "0600"
+        content: |
+          CLOUDFLARE_DNS_API_TOKEN={{ lookup('env', 'COLORS_PAR_CLOUDFLARE_API_TOKEN') }}
+          AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
+          AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
+      when: automq_cert_issuer | bool
+      no_log: true
+
+    - name: Issue or renew the certificate
+      ansible.builtin.shell: |
+        set -a; . /etc/automq/cert.env; set +a
+        /usr/local/bin/automq-cert 'automq.example.com,b0.automq.example.com,b1.automq.example.com,b2.automq.example.com'
+      args:
+        executable: /bin/bash
+      when: automq_cert_issuer | bool
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: cert_run
+      changed_when: "'published' in cert_run.stdout"
+
+    - name: Install the certificate and build the keystore
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-cert-deploy {{ automq_node_id }} 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094
+      register: cert_deploy
+      changed_when: "'installed' in cert_deploy.stdout or 'restarted' in cert_deploy.stdout"
+
+    # --------------------------------------------------------------- genesis
+
+    # Decided once, before any node formats. Claiming here rather than after
+    # the formats is what makes a re-run after a partial failure answer the
+    # same question the same way.
+    - name: Decide whether this run is the cluster's genesis
+      ansible.builtin.command: /usr/local/bin/automq-store genesis-claim
+      register: genesis_claim
+      changed_when: "'\"claimed\": true' in genesis_claim.stdout"
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+
+    - name: Format the metadata storage
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-format {{ automq_node_id }}
+        {{ (genesis_claim.stdout | from_json).claimed | lower }}
+      register: format_run
+      changed_when: "'format: complete' in format_run.stdout"
+
+    # ----------------------------------------------------------------- start
+
+    - name: Start the broker
+      ansible.builtin.command:
+        cmd: docker compose --env-file /etc/automq/.env -f /etc/automq/compose.yml up -d
+      register: compose_up
+      changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr"
+
+    - name: Wait for the broker to answer
+      ansible.builtin.command: >-
+        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
+        --bootstrap-server {{ automq_vpc_ip }}:9094
+        --command-config /etc/automq/admin.properties
+      register: broker_ready
+      until: broker_ready.rc == 0
+      retries: 40
+      delay: 15
+      changed_when: false
+
+    # ----------------------------------------------------------------- gates
+
+    - name: Apply the client ACLs
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-acl 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: acl_run
+      changed_when: false
+
+    - name: Run the on-host gates
+      ansible.builtin.command: >-
+        /usr/local/bin/automq-smoke 10.40.0.10:9094,10.40.0.11:9094,10.40.0.12:9094
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      register: smoke
+      changed_when: false
+
+    - name: Report the gates
+      ansible.builtin.debug:
+        msg: "{{ smoke.stdout_lines }}"
+      run_once: true
+
+    # The marker means "this cluster was proved", which is why it is written
+    # here and not when the containers started.
+    - name: Mark the storage ready
+      ansible.builtin.command: /usr/local/bin/automq-store ready
+      run_once: true
+      delegate_to: "{{ groups['automq'] | first }}"
+      changed_when: true
+
+    # --------------------------------------------------------------- timers
+
+    - name: Install the certificate timers
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/automq-{{ item }}"
+        mode: "0644"
+      loop:
+        - cert-deploy.service
+        - cert-deploy.timer
+
+    - name: Install the renewal timer on the issuer
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/automq-{{ item }}"
+        mode: "0644"
+      loop:
+        - cert-renew.service
+        - cert-renew.timer
+      when: automq_cert_issuer | bool
+
+    - name: Enable the certificate deployment timer
+      ansible.builtin.systemd_service:
+        name: automq-cert-deploy.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable the renewal timer on the issuer
+      ansible.builtin.systemd_service:
+        name: automq-cert-renew.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: automq_cert_issuer | bool

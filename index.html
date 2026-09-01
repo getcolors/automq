@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Provision a three-node AutoMQ cluster on Vultr — Kafka-compatible brokers whose storage tier is Cloudflare R2 — behind a public SASL_SSL endpoint with SCRAM authentication and ACL authorization.">
+  <title>AutoMQ Package Skill — getcolors</title>
+  <style>
+    :root{color-scheme:light;--ink:#1f2328;--muted:#59636e;--line:#d0d7de;--soft:#f6f8fa;--blue:#0969da;--green:#1a7f37;--warn:#9a6700}*{box-sizing:border-box}body{margin:0;color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:64px 28px 100px}h1{font-size:52px;line-height:1.05;margin:0}h2{margin-top:54px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{margin-top:30px}.lead{font-size:20px;color:var(--muted);max-width:790px}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:18px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--soft)}:not(pre)>code{padding:.12em .35em;border-radius:5px;background:var(--soft)}a{color:var(--blue)}.eyebrow{color:var(--green);font-weight:700;letter-spacing:.08em}.callout{padding:16px 18px;border-left:4px solid var(--green);background:#dafbe1}.warning{border-color:var(--warn);background:#fff8c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:8px}.card h3{margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}@media(max-width:650px){main{padding-top:38px}.grid{grid-template-columns:1fr}h1{font-size:40px}}
+  </style>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-4VKP1WY4QJ"></script>
+  <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-4VKP1WY4QJ',{page_title:'AutoMQ Package Skill — getcolors'});</script>
+<script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
+</head>
+<body><main>
+  <p class="eyebrow">GREEN PACKAGE SKILL · VULTR · AUTOMQ</p>
+  <h1>AutoMQ Package Skill</h1>
+  <p class="lead">A reproducible Green workflow for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster on Vultr — the Kafka 3.9 wire protocol over brokers whose storage tier is object storage rather than replicated disks.</p>
+
+  <div class="callout"><strong>Replication factor 1 is the design, not a mistake.</strong> AutoMQ acknowledges a produce once the record is in Cloudflare R2, so replicas would add cost and write amplification without adding durability — upstream ships RF=1 for the same reason. The three nodes buy a controller quorum, partition failover, and throughput. What RF=1 does <em>not</em> buy is availability, which is why acceptance kills a broker that leads a specific partition and measures how long that partition stays unwritable.</div>
+
+  <h2>Quick start</h2>
+  <pre><code>npx skills add getcolors/automq
+cp .agents/skills/package-automq-green/green ./green
+chmod +x green
+./green build
+./green create --dry-run</code></pre>
+  <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization.</p>
+
+  <h2>Architecture</h2>
+  <div class="grid">
+    <div class="card"><h3>Compute</h3><p>Three Vultr instances in one VPC, and a firewall that opens 22 and 9092 — nothing else. The controller quorum and inter-broker replication never touch the public interface.</p></div>
+    <div class="card"><h3>Storage tier</h3><p>Two R2 buckets, adopted and never created. AutoMQ writes hash-prefixed keys at the bucket root and supports no path prefix, so each bucket belongs to one cluster outright — proven empty before it is claimed.</p></div>
+    <div class="card"><h3>Identity</h3><p>Four principals, no anonymous access anywhere. The controller listener uses PLAIN from a static JAAS entry; inter-broker and public listeners use SCRAM bootstrapped into the metadata log at genesis.</p></div>
+    <div class="card"><h3>Acceptance</h3><p>Six gates on the hosts and seven from the workstation, including a targeted failover: the partition is chosen because node 2 leads it, so the test cannot pass without exercising the broker it killed.</p></div>
+  </div>
+
+  <h2>Connecting</h2>
+  <p>The bootstrap name carries one A record per node; each broker advertises its own name, and one Let&rsquo;s Encrypt certificate covers all of them.</p>
+  <pre><code>kcat -b &lt;automq-host&gt;:9092 \
+  -X security.protocol=SASL_SSL \
+  -X sasl.mechanism=SCRAM-SHA-512 \
+  -X sasl.username=automq \
+  -X sasl.password=&lt;from automq-credential&gt; -L</code></pre>
+  <p>The password is generated on the server and printed by <code>automq-credential</code>, a root-only command deliberately separate from <code>automq-status</code> — the command an operator runs a hundred times must not put a credential into scrollback.</p>
+
+  <h2>Authentication is not authorization</h2>
+  <p>Port 9092 faces the internet, so SCRAM alone is not the boundary. The cluster runs <code>StandardAuthorizer</code> with <code>allow.everyone.if.no.acl.found=false</code>, and the public client principal holds prefixed <code>Describe/Read/Write</code> on topics and <code>Describe/Read</code> on groups — no <code>Create</code>, no <code>Alter</code>, no <code>ClusterAction</code>. Acceptance asserts the denials, not only the grants.</p>
+
+  <h2>One certificate issuer</h2>
+  <p>Node 0 alone runs ACME and is the only host that receives a Cloudflare token, publishing the result to the ops bucket for the others to pull. Three nodes issuing independently would race on the shared <code>_acme-challenge</code> record for the bootstrap name — each deleting the others&rsquo; proof — and would put a zone-editing credential on every publicly reachable broker. Restarts are ordered by a conditional-create lease in object storage, because a node checking its own quorum health cannot order actors it cannot see.</p>
+
+  <h2>Exposure</h2>
+  <table>
+    <tr><th>Port</th><th>Exposure</th><th>Purpose</th></tr>
+    <tr><td>22</td><td><code>vultr-ssh-sources</code></td><td>Key-only SSH: convergence and recovery</td></tr>
+    <tr><td>9092</td><td><code>vultr-kafka-sources</code></td><td>The public Kafka endpoint: SASL_SSL, SCRAM-SHA-512, ACL-gated</td></tr>
+    <tr><td>9093</td><td>VPC</td><td>KRaft controller quorum</td></tr>
+    <tr><td>9094</td><td>VPC</td><td>Inter-broker traffic</td></tr>
+  </table>
+
+  <div class="callout warning"><strong><code>delete</code> never empties the buckets.</strong> They hold the cluster&rsquo;s data, and a teardown that silently erased them would make an accidental <code>delete</code> unrecoverable. Purging is a separate, deliberate action.</div>
+
+  <h2>Source</h2>
+  <p><a href="https://github.com/getcolors/automq">github.com/getcolors/automq</a> &middot; reference deployment <a href="https://github.com/getcolors/automq-vultr">automq-vultr</a> &middot; <a href="https://www.getcolors.ai/">getcolors.ai</a></p>
+</main></body>
+</html>

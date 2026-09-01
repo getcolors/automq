@@ -1,0 +1,54 @@
+# Opt-out fixture: vultr-ssh-keys is supplied, so the package touches no key
+# material at all. The keypair standard has two modes and conformance means
+# both hold, which is why bb golden renders this one too.
+profile: automq-optout
+workdir: .colors
+
+provider-compute: vultr
+provider-dns: cloudflare
+provider-backend: local
+
+compute-prevent-destroy: true
+
+automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
+automq-node-count: 3
+automq-cluster-id: VrUQI4OSR0y5vnTrGiKsxQ
+
+automq-host: automq.example.com
+automq-broker-name-prefix: b
+automq-letsencrypt-email: fixture@example.com
+automq-lego-version: 5.4.0
+
+automq-kafka-port: 9092
+automq-internal-port: 9094
+automq-controller-port: 9093
+automq-sasl-user: automq
+automq-admin-user: automq-admin
+automq-broker-user: automq-broker
+automq-controller-user: automq-controller
+automq-sasl-mechanism: SCRAM-SHA-512
+automq-heap-opts: "-Xms2g -Xmx2g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=3g"
+automq-client-topic-prefix: colors-
+automq-topic-partitions: 6
+automq-log-retention-hours: 168
+
+automq-data-r2-bucket: automq-fixture-data
+automq-ops-r2-bucket: automq-fixture-ops
+automq-r2-endpoint: https://fixture.r2.cloudflarestorage.com
+automq-r2-region: auto
+automq-wal-batch-interval-ms: 250
+automq-wal-max-bytes-in-batch: 8388608
+
+vultr-region: ams
+vultr-plan: vc2-4c-8gb
+vultr-os-id: 2284
+vultr-vpc-subnet: 10.40.0.0/24
+vultr-ssh-sources:
+  - 0.0.0.0/0
+vultr-kafka-sources:
+  - 0.0.0.0/0
+
+r2-bucket: fixture-state
+r2-endpoint: https://fixture.r2.cloudflarestorage.com
+
+vultr-ssh-keys: 11111111-2222-3333-4444-555555555555

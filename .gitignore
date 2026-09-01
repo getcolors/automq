@@ -1,0 +1,11 @@
+.*
+!.envrc
+!.gitignore
+!.nojekyll
+!.github
+
+.colors/
+target/
+.devenv/
+.direnv/
+node_modules/

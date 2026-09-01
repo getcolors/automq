@@ -1,0 +1,25 @@
+{:paths ["test/clj" "test/resources"]
+ :deps {io.github.getcolors/automq {:local/root "."}}
+ :tasks
+ {test {:doc "Run unit tests under Babashka"
+        :requires ([clojure.test :as t]
+                   [io.github.getcolors.automq.validate-test]
+                   [io.github.getcolors.automq.ssh-test]
+                   [io.github.getcolors.automq.ssh-config-test]
+                   [io.github.getcolors.automq.cluster-test]
+                   [io.github.getcolors.automq.tools-test]
+                   [io.github.getcolors.automq.workflow-test])
+        :task (let [{:keys [fail error]}
+                    (t/run-tests 'io.github.getcolors.automq.validate-test
+                                 'io.github.getcolors.automq.ssh-test
+                                 'io.github.getcolors.automq.ssh-config-test
+                                 'io.github.getcolors.automq.cluster-test
+                                 'io.github.getcolors.automq.tools-test
+                                 'io.github.getcolors.automq.workflow-test)]
+                (System/exit (if (pos? (+ fail error)) 1 0)))}
+  golden {:doc "Render and diff committed golden output"
+          :task (shell "./scripts/golden.sh")}
+  golden:accept {:doc "Regenerate goldens after inspecting a fresh render"
+                 :task (shell "./scripts/golden.sh" "--accept")}
+  pin {:doc "Stamp the launcher after a clean pushed commit"
+       :task (load-file "tasks/pin.clj")}}}

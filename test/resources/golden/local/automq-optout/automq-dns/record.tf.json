@@ -1,0 +1,54 @@
+{
+  "resource" : {
+    "cloudflare_dns_record" : {
+      "bootstrap_0" : {
+        "content" : "192.0.2.10",
+        "name" : "automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "bootstrap_1" : {
+        "content" : "192.0.2.11",
+        "name" : "automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "bootstrap_2" : {
+        "content" : "192.0.2.12",
+        "name" : "automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "broker_0" : {
+        "content" : "192.0.2.10",
+        "name" : "b0.automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "broker_1" : {
+        "content" : "192.0.2.11",
+        "name" : "b1.automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "broker_2" : {
+        "content" : "192.0.2.12",
+        "name" : "b2.automq.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      }
+    }
+  }
+}

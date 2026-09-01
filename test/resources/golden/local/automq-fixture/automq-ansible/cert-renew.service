@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew the AutoMQ certificate (issuer node only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/automq/cert.env
+ExecStart=/usr/local/bin/automq-cert automq.example.com,b0.automq.example.com,b1.automq.example.com,b2.automq.example.com

@@ -1,0 +1,147 @@
+#!/usr/bin/env bb
+;; AutoMQ launcher — a three-node S3-backed Kafka cluster on Vultr.
+;;
+;; Desired state lives in colors.yml. Secrets are supplied only through
+;; COLORS_PAR_* environment variables. COLORS_PAR_PROFILE is always refused:
+;; it keys this deployment's OpenTofu state, names its machines and its
+;; keypair, and an environment overlay could only point one cluster at
+;; another's state.
+;;
+;; Lifecycle logic lives in the tested automq library, not in this copied file.
+;; A copied payload is the one place in this project where code cannot be
+;; tested, so nothing that can live elsewhere lives here.
+
+(require '[babashka.fs :as fs]
+         '[clojure.java.io :as io]
+         '[clojure.string :as str])
+
+(def script-dir
+  (let [file (if (= "NO_SOURCE_PATH" *file*)
+               (fs/path (fs/cwd) "green")
+               (fs/path *file*))]
+    (str (fs/parent (fs/canonicalize file)))))
+
+(def ^:private launcher-contract 1)
+
+;; Managed by `bb pin` — do not edit by hand. nil before this repository has
+;; been pushed and stamped: a launcher that cannot resolve its own library says
+;; so rather than inventing a SHA or silently using whatever is lying around.
+(def ^:private automq-sha nil)
+
+(def ^:private automq-git-url "https://github.com/getcolors/automq.git")
+(def ^:private green-git-url "https://github.com/getcolors/green.git")
+
+(defn- lib-coord [env-var url sha deps-root]
+  (if-let [root (System/getenv env-var)]
+    {:local/root root}
+    (when sha
+      (cond-> {:git/url url :git/sha sha}
+        deps-root (assoc :deps/root deps-root)))))
+
+(def ^:private resolved?
+  (some? (io/resource "io/github/getcolors/automq/tools.clj")))
+
+(def ^:private bootstrap-error
+  (when (and (System/getProperty "babashka.version") (not resolved?))
+    (let [automq (lib-coord "AUTOMQ_LIB_ROOT" automq-git-url automq-sha nil)
+          green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)]
+      (if-not automq
+        (str "this launcher carries no automq pin.\n"
+             "It has not been stamped by `bb pin`, which cannot run until the "
+             "automq repository has been pushed.\n"
+             "Point it at a checkout meanwhile: AUTOMQ_LIB_ROOT=/path/to/automq")
+        (do ((requiring-resolve 'babashka.deps/add-deps)
+             {:deps (cond-> {'io.github.getcolors/automq automq}
+                      green (assoc 'io.github.getcolors/green green))})
+            nil)))))
+
+(def ^:private load-error
+  (or bootstrap-error
+      (try
+        (require 'green.cli 'io.github.getcolors.automq.workflow)
+        nil
+        (catch Throwable t (or (ex-message t) (str (class t)))))))
+
+(defn- automq-contract []
+  (or (some-> (requiring-resolve 'io.github.getcolors.automq.utils/contract) deref)
+      0))
+
+(defn- contract-error []
+  (let [resolved (if load-error 0 (automq-contract))]
+    (when (< resolved launcher-contract)
+      {:green/exit 2
+       :green/err (str "this launcher requires automq contract " launcher-contract
+                       " but resolved " resolved "\n"
+                       (if automq-sha
+                         (str "the pinned commit " (apply str (take 7 automq-sha))
+                              " predates this launcher; update the skill or repin")
+                         "no automq library could be resolved")
+                       (when load-error (str "\n" load-error)))})))
+
+(defn- find-up [name dir]
+  (loop [dir (.getAbsoluteFile (io/file dir))]
+    (when dir
+      (let [candidate (io/file dir name)]
+        (if (.exists candidate)
+          (str candidate)
+          (recur (.getParentFile dir)))))))
+
+(defn- default-file []
+  (or (find-up "colors.yml" ".")
+      (let [beside-script (io/file script-dir "colors.yml")]
+        (when (.exists beside-script) (str beside-script)))
+      "colors.yml"))
+
+(defn- file-arg? [arg]
+  (or (= "-f" arg) (= "--file" arg)
+      (str/starts-with? (str arg) "--file=")))
+
+(defn default-args [args]
+  (let [args (vec args)]
+    (cond-> args
+      (not-any? file-arg? args) (conj "-f" (default-file)))))
+
+(def lifecycle-commands #{"build" "create" "delete" "validate"})
+
+(def usage
+  (str "Usage: green <build|create|delete|validate> "
+       "[-f|--file colors.yml] [--dry-run]\n"
+       "\n"
+       "  build     render the work directory only — contact nothing\n"
+       "  create    provision the cluster, converge it, and prove it works\n"
+       "  delete    stop the cluster and destroy DNS and infrastructure\n"
+       "  validate  check desired state, tools, and Vultr access\n"
+       "\n"
+       "Object storage is never destroyed by `delete`: the buckets hold the\n"
+       "cluster's data, and emptying them is a separate, explicit action."))
+
+(defn run [& args]
+  (let [args (vec args)
+        command (first args)]
+    (cond
+      (contains? #{"help" "--help" "-h"} command)
+      {:green/exit 0 :green/err usage}
+
+      (contains? lifecycle-commands command)
+      (or (contract-error)
+          ((requiring-resolve 'green.cli/run-cli)
+           @(requiring-resolve 'io.github.getcolors.automq.workflow/workflow)
+           (default-args args)))
+
+      :else {:green/exit 2 :green/err usage})))
+
+(defn -main [& args]
+  (let [{:green/keys [exit err trace]} (apply run args)]
+    (when err
+      (binding [*out* (if (zero? (or exit 0)) *out* *err*)]
+        (println err)
+        (when trace (println trace))))
+    (System/exit (or exit 0))))
+
+(defn- launched-as-script? []
+  (when-let [bb-file (System/getProperty "babashka.file")]
+    (= (str (fs/canonicalize bb-file))
+       (str (fs/canonicalize *file*)))))
+
+(when (launched-as-script?)
+  (apply -main *command-line-args*))

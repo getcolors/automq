@@ -1,0 +1,26 @@
+# Stop the cluster before the compute is destroyed.
+#
+# Deliberately does not touch object storage. The buckets hold the cluster's
+# data, and a delete that silently emptied them would make an accidental
+# `delete` unrecoverable — the one thing infrastructure teardown must never be.
+# Purging them is a separate, explicit operator action; the README says how.
+- name: Stop AutoMQ
+  hosts: automq
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Stop the certificate timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - automq-cert-deploy.timer
+        - automq-cert-renew.timer
+      failed_when: false
+
+    - name: Stop the broker
+      ansible.builtin.command:
+        cmd: docker compose -f /etc/automq/compose.yml down --timeout 120
+      failed_when: false
+      changed_when: true
