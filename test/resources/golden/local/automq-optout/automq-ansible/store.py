@@ -66,12 +66,23 @@ def get_json(s3, bucket, k):
     return json.loads(body)
 
 
+def _sign_if_none_match(request, **_kwargs):
+    request.headers.add_header("If-None-Match", "*")
+
+
 def put_json(s3, bucket, k, payload, if_absent=False):
     """Write a marker. `if_absent` makes it a conditional create.
 
     The conditional form is what makes ownership a claim rather than a hope:
     two deployments that both observed an empty bucket cannot both succeed
-    here, so exactly one of them proceeds and the other fails loudly.
+    here, so exactly one proceeds and the other fails loudly.
+
+    The header is attached with a botocore event hook rather than boto3's
+    `IfNoneMatch` parameter, because the distribution's python3-boto3 predates
+    that parameter and rejects it client-side, before any request is made.
+    The wire protocol is older than the SDK's support for it, so speaking the
+    protocol directly works on the boto3 that is actually installed — and
+    avoids a pip/venv dependency on a host that has a perfectly good one.
     """
     args = {
         "Bucket": bucket,
@@ -79,16 +90,22 @@ def put_json(s3, bucket, k, payload, if_absent=False):
         "Body": json.dumps(payload, sort_keys=True, indent=2).encode(),
         "ContentType": "application/json",
     }
-    if if_absent:
-        args["IfNoneMatch"] = "*"
+    if not if_absent:
+        s3.put_object(**args)
+        return True
+
+    s3.meta.events.register("before-sign.s3.PutObject", _sign_if_none_match)
     try:
         s3.put_object(**args)
         return True
     except ClientError as e:
         code = e.response["Error"]["Code"]
-        if if_absent and code in ("PreconditionFailed", "412", "ConditionalRequestConflict"):
+        status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code in ("PreconditionFailed", "ConditionalRequestConflict") or status == 412:
             return False
         raise
+    finally:
+        s3.meta.events.unregister("before-sign.s3.PutObject", _sign_if_none_match)
 
 
 def object_count(s3, bucket, limit=1):
