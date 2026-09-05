@@ -103,6 +103,10 @@ resource "vultr_instance" "node" {
   # is a rebuild, never an edit on a machine whose disk you intend to keep.
   ssh_key_ids = ["11111111-2222-3333-4444-555555555555"]
   # Wait for ssh before starting Ansible.
+  # fileexists for the same reason as the key resource above: a delete after
+  # a completed delete evaluates this connection block with the key files
+  # already gone. The connection is only ever used by the create, which has
+  # generated the file in preflight; the empty branch is never dialled.
   connection {
     type = "ssh"
     user = "root"

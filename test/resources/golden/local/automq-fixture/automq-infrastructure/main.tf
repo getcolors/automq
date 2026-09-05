@@ -121,11 +121,15 @@ resource "vultr_instance" "node" {
   # is a rebuild, never an edit on a machine whose disk you intend to keep.
   ssh_key_ids = [vultr_ssh_key.machine.id]
   # Wait for ssh before starting Ansible.
+  # fileexists for the same reason as the key resource above: a delete after
+  # a completed delete evaluates this connection block with the key files
+  # already gone. The connection is only ever used by the create, which has
+  # generated the file in preflight; the empty branch is never dialled.
   connection {
     type = "ssh"
     user = "root"
     host = self.main_ip
-    private_key = file("/home/build-placeholder/.ssh/automq-fixture")
+    private_key = fileexists("/home/build-placeholder/.ssh/automq-fixture") ? file("/home/build-placeholder/.ssh/automq-fixture") : ""
   }
   provisioner "remote-exec" {
     inline = ["ls"]
