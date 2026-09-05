@@ -119,4 +119,17 @@ ok 'blue finds colors.yml by walking upward'
   || fail 'blue/blue is not the payload symlink'
 ok 'each colour entry point is the payload symlink'
 
+# The ONCE pin is one fact in four places: the three manifests and the red
+# payload's PINS, which installs ONCE itself (blue resolves it transitively
+# through the package). A manifest bump the red payload did not follow
+# installs a package whose `computeCluster` import fails at first use in a
+# deployment, not here — which is how the red payload sat at 759eb03 for one
+# release after the package moved to b1628b7.
+once_sha=$(awk '/once\.git/ {found=1} found && match($0, /:git\/sha "[0-9a-f]{40}"/) {print substr($0, RSTART+10, 40); exit}' "$root/green/deps.edn")
+[ -n "$once_sha" ] || fail 'green/deps.edn carries no ONCE pin'
+grep -q "getcolors/once#$once_sha" "$root/red/package.json" || fail 'red/package.json ONCE pin differs from green'
+grep -q "rev = \"$once_sha\"" "$root/blue/pyproject.toml" || fail 'blue/pyproject.toml ONCE pin differs from green'
+grep -q "getcolors/once#$once_sha" "$root/skills/package-automq-red/red" || fail 'red payload PINS ONCE pin differs from green'
+ok 'the ONCE pin agrees in green, red, blue, and the red payload'
+
 echo "launcher: $checks checks passed"
