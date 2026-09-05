@@ -24,7 +24,12 @@ locals {
 # id here in keygen mode.
 resource "vultr_ssh_key" "machine" {
   name    = "<{ profile }>"
-  ssh_key = trimspace(file("<{ ssh-public-key-path }>"))
+  # fileexists: a delete after a completed delete renders this stack with the
+  # key files already gone (the keypair cleanup is the last step) and tofu
+  # evaluates file() even while destroying an empty state. A real create has
+  # generated the file in preflight before this renders, so the empty branch
+  # is never applied.
+  ssh_key = fileexists("<{ ssh-public-key-path }>") ? trimspace(file("<{ ssh-public-key-path }>")) : ""
 }
 
 <% endif %># The private network carrying the KRaft quorum and inter-broker replication.
