@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from blue import tofu
@@ -11,6 +10,8 @@ from blue.ansible import ansible_with_spec
 from blue.cli import stage_dir
 from blue.runtime import runtime
 from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
+from package_once_blue import compute as once_compute
+from package_once_blue import compute_cluster as once_cluster
 from package_once_blue.utils import registrable_domain
 
 from . import cluster, ssh_config, validate
@@ -41,11 +42,9 @@ def raw_spec(target: str, content: str) -> dict:
     return content_spec(target, content)
 
 
-def cidrs(opts: dict, key: str) -> list[str]:
-    value = opts.get(key)
-    xs = value if isinstance(value, list) else re.split(
-        r"[,\s]+", "" if value is None else str(value))
-    return [s for s in (str(x).strip() for x in xs) if s]
+# A source list as desired state or an overlay string carries it. ONCE's, so
+# the validator and the templates can never disagree about what an entry is.
+cidrs = once_compute.cidrs
 
 
 def credential_env(opts: dict, *slots: str) -> dict[str, str] | None:
@@ -64,47 +63,25 @@ def backend_credential_env(opts: dict) -> dict[str, str] | None:
     return credential_env(opts)
 
 
-def _hyphenate_keys(m: dict) -> dict:
-    """HCL object keys are snake_case and the rest of this package is
-    kebab-case. `vpc_ip` is the first output in this project with a word
-    boundary at all — ip, user and name are spelled identically in both
-    conventions — so nothing had exposed the mismatch before."""
-    return {k.replace("_", "-"): v for k, v in m.items()}
-
-
-def normalize_params(params):
-    """The compute stage's `params` output.
-
-    The outer keys are deliberately NOT hyphenated: `ssh_key_id` is the SSH
-    Keypair Standard's contract with ONCE's create preflight, which reads it
-    verbatim. Only the node entries are converted."""
-    if not isinstance(params, dict):
-        return None
-    result = dict(params)
-    if isinstance(result.get("nodes"), list):
-        result["nodes"] = [_hyphenate_keys(n) for n in result["nodes"]]
-    return result
-
-
-def output_params(result: dict):
-    """The compute stage's `params` output, normalized."""
-    return normalize_params((result.get("tofu/outputs") or {}).get("params"))
-
-
 async def state_output(opts: dict):
-    """The applied `params`, or None when no state is readable. The SSH Keypair
-    Standard's create matrix keys on this best-effort read: an unreadable state
-    (a fresh clone, a missing backend) counts as absent."""
-    try:
-        outputs = await tofu.outputs(tool_dir(opts, infrastructure_tool),
-                                     backend_credential_env(opts))
-        return normalize_params((outputs or {}).get("params"))
-    except Exception:
-        return None
+    """The reader ONCE's `read_state` takes: the recorded `params` map with the
+    underscores kept (`ssh_key_id`, `vpc_ip`), or None when the state is
+    readable and holds no compute. This package's pre-adoption states already
+    recorded `params` in this shape, only without `provider`, which the Compute
+    Provider Standard reads as the default provider — so there is no legacy
+    translation. An unreadable backend is whatever `blue.tofu` raises — the
+    SDK's `StepError` — deliberately uncaught: `read_state` turns it into
+    `{"error": message}`, and create and delete treat that differently. Looked
+    up on this module at call time, so tests can replace it."""
+    outputs = await tofu.outputs(tool_dir(opts, infrastructure_tool),
+                                 backend_credential_env(opts))
+    return (outputs or {}).get("params")
 
 
 def nodes(opts: dict) -> list[dict]:
-    return cluster.nodes(opts, (opts.get("automq/params") or {}).get("nodes"))
+    """The cluster's nodes for every later stage: the recorded cluster under
+    `once/cluster` on a real run, ONCE's fallbacks on a build."""
+    return cluster.nodes(opts, opts.get("once/cluster"))
 
 
 # ------------------------------------------------------------------ compute
@@ -129,6 +106,16 @@ def infrastructure_data(opts: dict) -> dict:
             "kafka-sources-hcl": tofu.hcl_list(cidrs(opts, "vultr-kafka-sources"))}
 
 
+def resolved_cluster(opts: dict, result: dict) -> dict:
+    """The applied compute stage's `params`, adopted under `once/cluster` for
+    the stages that follow — or ONCE's refusal: no `params` output at all, or a
+    node set that is partial, undeclared, duplicated or incomplete, exits 1
+    rather than rendering a quorum string against the documentation
+    addresses."""
+    return once_cluster.resolved_cluster(cluster.spec, opts, result, {},
+                                         once_cluster.output_params(result))
+
+
 async def infrastructure_step(opts: dict) -> dict:
     dir = tool_dir(opts, infrastructure_tool)
     specs = [spec(template("infrastructure", "main.tf"), f"{dir}/main.tf",
@@ -139,11 +126,7 @@ async def infrastructure_step(opts: dict) -> dict:
         return result
     if opts.get("blue/event") in ("build", "delete"):
         return result
-    params = output_params(result)
-    error = cluster.missing_node_error(opts, (params or {}).get("nodes"))
-    if error:
-        return {**result, "blue/exit": 1, "blue/err": error}
-    return {**result, "automq/params": params}
+    return resolved_cluster(opts, result)
 
 
 # ---------------------------------------------------------------------- dns
@@ -212,10 +195,9 @@ def ansible_local_specs(opts: dict) -> list[dict]:
 
 def ssh_config_hosts(opts: dict, nodes_: list[dict]) -> list[dict]:
     """The `~/.ssh/config` entries, as data the play loops over: the bare
-    profile pointing at node 0, then one alias per node."""
-    return [{"name": ssh_config.host_alias(opts), "ip": nodes_[0]["ip"]},
-            *[{"name": ssh_config.node_alias(opts, n["index"]), "ip": n["ip"]}
-              for n in nodes_]]
+    profile pointing at node 0 (the spec's entry), then one alias per node.
+    ONCE's (Compute Cluster Standard §6)."""
+    return once_cluster.ssh_config_hosts(cluster.spec, opts, nodes_)
 
 
 async def ansible_local_step(opts: dict) -> dict:
@@ -333,10 +315,11 @@ def ansible_specs(opts: dict) -> list[dict]:
 
 async def ansible_step(opts: dict) -> dict:
     dir = tool_dir(opts, ansible_tool)
-    applied = (opts.get("automq/params") or {}).get("nodes") or []
-    if opts.get("blue/event") == "delete" and not applied:
-        # No compute in state: there is nothing to stop, and the cleanup play
-        # would only fail against the placeholder addresses.
+    if opts.get("blue/event") == "delete" and opts.get("once/cluster") is None:
+        # A readable state without compute: there is nothing to stop, and the
+        # cleanup play would only fail against the placeholder addresses. (An
+        # unreadable state, or a partial one, never reaches here — the delete
+        # failed closed at adoption.)
         return {**opts, "blue/exit": 0}
     return await ansible_with_spec(
         opts, ansible_specs(opts),

@@ -85,10 +85,25 @@
   (is (nil? (error-matching (assoc base :compute-prevent-destroy false) #"prevent-destroy")))
   (is (error-matching (assoc base :compute-prevent-destroy "yes") #"must be true or false")))
 
-(deftest sources-must-be-cidr-lists
-  (is (error-matching (assoc base :vultr-kafka-sources "0.0.0.0/0") #"YAML list"))
-  (is (error-matching (assoc base :vultr-ssh-sources ["1.2.3.4"]) #"CIDR block"))
-  (is (error-matching (assoc base :vultr-ssh-sources []) #"at least one source")))
+(deftest the-compute-checks-are-the-cluster-standards
+  ;; Selection, the source lists, the created network's CIDR and the node
+  ;; count are ONCE's over the spec, in ONCE's words. The package's own
+  ;; cluster-shape rules still apply beside them.
+  (is (= [":provider-compute must be one of vultr"]
+         (errors (assoc base :provider-compute "digitalocean"))))
+  (is (= [":vultr-ssh-sources must list at least one CIDR"]
+         (errors (assoc base :vultr-ssh-sources []))))
+  (is (= [":vultr-ssh-sources entry \"1.2.3.4\" is not an IPv4 or IPv6 CIDR"]
+         (errors (assoc base :vultr-ssh-sources ["1.2.3.4"]))))
+  (testing "an empty Kafka list means no public Kafka access, not a mistake"
+    (is (empty? (errors (assoc base :vultr-kafka-sources [])))))
+  (testing "the VPC must be a network, host bits zero"
+    (is (= [":vultr-vpc-subnet must be a canonical IPv4 network such as 10.40.0.0/24"]
+           (errors (assoc base :vultr-vpc-subnet "10.40.0.1/24")))))
+  (testing "a present count that is not a positive integer is refused twice: ONCE's rule and the quorum's"
+    (let [reported (errors (assoc base :automq-node-count "three"))]
+      (is (some #{":automq-node-count must be a positive integer"} reported))
+      (is (some #{":automq-node-count must be an integer"} reported)))))
 
 (deftest the-profile-overlay-is-refused
   (is (seq (validate/env-errors {"COLORS_PAR_PROFILE" "somewhere-else"})))

@@ -8,24 +8,80 @@
   nodes forms no quorum at all, and a certificate whose SAN list misses one
   broker fails only for the client that happens to be routed there.
 
+  The node set itself — how many nodes, their ids, the fallback addresses a
+  `build` renders with, and the refusal of a state that does not describe
+  the whole cluster — is the Compute Cluster Standard's
+  (`workspace/standards/compute-cluster.md`) and is ONCE's
+  `compute-cluster` namespace, called with the `spec` below and never
+  copied. What stays here is AutoMQ's: broker names, the SAN list, the
+  quorum string, listeners, principals and ACLs.
+
   Everything here is a pure function of desired state plus the compute
   stage's outputs, so the whole of it is reachable from the test suite and
   visible in the goldens. Nothing in this file may read the environment,
   the filesystem, or the network."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [io.github.getcolors.once.compute :as compute]
+            [io.github.getcolors.once.compute-cluster :as once-cluster]))
+
+;; ---------------------------------------------------------------- the spec
+
+(def compute-providers
+  "provider-compute -> what that choice implies.
+
+  `:required` are the non-secret keys the provider's template interpolates,
+  `:secrets` the credentials it needs through COLORS_PAR_*, `:tofu-env` the
+  subset OpenTofu reads from the process environment itself, and `:network`
+  the private network the cluster's quorum crosses — created by this package
+  from `vultr-vpc-subnet`, never discovered. Keeping them together is what
+  stops a provider being validated against one set of keys and run with
+  another. The keys of this map are the advertised providers; Vultr is the
+  only one this package has a template and a golden for.
+
+  Two keys the template reads are deliberately not required. `vultr-name` is
+  an optional override of the profile (Compute Name Standard), and
+  `vultr-ssh-keys` is meaningful by its absence (SSH Keypair Standard)."
+  {"vultr"
+   {:required [:vultr-region :vultr-plan :vultr-os-id :vultr-vpc-subnet
+               :vultr-ssh-sources :vultr-kafka-sources]
+    :secrets [:vultr-api-key]
+    :tofu-env {:vultr-api-key "VULTR_API_KEY"}
+    :network {:mode :created :key :vultr-vpc-subnet}}})
+
+(def default-compute-provider
+  "The provider a deployment created before this package recorded one in its
+  compute output must be running: the only one it ever offered."
+  "vultr")
 
 (def default-node-count 3)
 
-(defn node-count [opts]
-  (let [n (:automq-node-count opts)]
-    (if (integer? n) n default-node-count)))
+(def spec
+  "How this package describes itself to ONCE's `compute-cluster`. One
+  homogeneous role whose count is `automq-node-count` (three by default);
+  the bare `<profile>` alias reaches node 0, the default entry. `:sources`
+  names the firewall lists the template reads — SSH must list at least one
+  CIDR, an empty Kafka list means no public Kafka access."
+  {:registry compute-providers
+   :default default-compute-provider
+   :sources {:non-empty ["ssh-sources"] :may-be-empty ["kafka-sources"]}
+   :roles [{:role nil :count-key :automq-node-count :count default-node-count}]})
+
+;; ------------------------------------------------------------------- names
+
+(defn node-count
+  "How many nodes the cluster has: `automq-node-count` when desired state
+  carries it, else three. ONCE's; validation refuses a present value that is
+  not a positive integer before any derivation runs."
+  [opts]
+  (once-cluster/node-count spec opts nil))
 
 (defn indexes
   "Node indexes, `0..n-1`. The index is the KRaft `node.id`, the suffix in the
   machine label, and the ordinal in the broker name: one number, so the three
-  can never disagree."
+  can never disagree. ONCE's ids are 0-based per role, which is what keeps
+  `node.id = index` true."
   [opts]
-  (vec (range (node-count opts))))
+  (mapv :index (once-cluster/node-ids spec opts)))
 
 (defn broker-name
   "The public name broker `i` advertises, `b<i>.<automq-host>`.
@@ -53,83 +109,56 @@
 
 (defn compute-name
   "The cluster's base machine name (Compute Name Standard §1-2): the profile,
-  unless desired state overrides it with `vultr-name`."
+  unless desired state overrides it with `vultr-name`. ONCE's, so every label
+  derives from the same value."
   [opts]
-  (let [override (str (:vultr-name opts))]
-    (if (str/blank? (str/trim override))
-      (str (:profile opts))
-      override)))
+  (compute/name opts))
 
 (defn machine-name
-  "The label of machine `i`. Numbered because there is more than one; the
-  standard names the machine after the profile, and the index disambiguates
-  without introducing a second naming scheme."
+  "The label of machine `i`, `<compute-name>-<i>`: the Cluster Standard's
+  fallback name for the nil role, which is also what the template labels the
+  instance. Numbered because there is more than one; the standard names the
+  machine after the profile, and the index disambiguates without introducing
+  a second naming scheme."
   [opts i]
-  (str (compute-name opts) "-" i))
+  (once-cluster/fallback-node-name spec opts {:role nil :index i}))
 
 (defn machine-names [opts]
   (mapv #(machine-name opts %) (indexes opts)))
 
 ;; --------------------------------------------------------------------- nodes
 
-(def fallback-node
-  "What a credential-free `build` renders in place of a compute output. Fixed
-  addresses from the documentation ranges (RFC 5737 / RFC 1918) so a build is
-  byte-identical on every workstation and the committed goldens mean
-  something."
-  {:ip "192.0.2.10" :vpc-ip "10.40.0.10" :user "root" :sudoer "root"})
+(defn- automq-node
+  "One of ONCE's nodes as this package's renderers read it: `:vpc-ip` in the
+  package's kebab spelling — the templates, the inventory and the quorum
+  string were written against it, and adapting here keeps every rendered
+  file byte-identical — plus the broker name this node advertises."
+  [opts node]
+  (-> node
+      (dissoc :vpc_ip)
+      (assoc :vpc-ip (:vpc_ip node)
+             :broker-name (broker-name opts (:index node)))))
 
-(defn fallback-nodes [opts]
-  (mapv (fn [i]
-          (assoc fallback-node
-                 :index i
-                 :name (machine-name opts i)
-                 :ip (str "192.0.2." (+ 10 i))
-                 :vpc-ip (str "10.40.0." (+ 10 i))
-                 :broker-name (broker-name opts i)))
-        (indexes opts)))
+(defn fallback-nodes
+  "What a credential-free `build` renders in place of a compute output:
+  ONCE's fallbacks — public addresses from `192.0.2.0/24`, private ones cut
+  from `vultr-vpc-subnet`, offset 10 — so a build is byte-identical on every
+  workstation and the committed goldens mean something."
+  [opts]
+  (mapv #(automq-node opts %) (once-cluster/fallback-nodes spec opts)))
 
 (defn nodes
   "The node list the Ansible stage and the templates consume.
 
-  `params` is the compute stage's output, a list of maps keyed by index. On a
-  build there is none, so the fallbacks stand in. On a real run a missing or
-  short list is a hard error rather than a silent partial cluster: rendering
+  `params` is the compute stage's recorded `params` map, adopted under
+  `:once/cluster` on a real run. On a build there is none, so the fallbacks
+  stand in. On a real run ONCE refuses a state that does not describe every
+  declared node with every field, and never substitutes a fallback: rendering
   a two-voter quorum string for a three-node cluster would produce a cluster
   that starts and then cannot elect."
-  ([opts] (nodes opts (:automq/params opts)))
+  ([opts] (nodes opts (:once/cluster opts)))
   ([opts params]
-   (if (empty? params)
-     (fallback-nodes opts)
-     (let [by-index (into {} (map (juxt #(int (:index %)) identity)) params)]
-       (mapv (fn [i]
-               (let [p (get by-index i)]
-                 (merge fallback-node
-                        {:index i
-                         :name (machine-name opts i)
-                         :broker-name (broker-name opts i)}
-                        (select-keys p [:ip :vpc-ip :user :sudoer]))))
-             (indexes opts))))))
-
-(defn missing-node-error
-  "The error for a compute output that does not cover every index, or that
-  omits an address. Returned rather than thrown so the workflow can report it
-  the same way it reports every other failure."
-  [opts params]
-  (when (seq params)
-    (let [by-index (into {} (map (juxt #(int (:index %)) identity)) params)
-          missing (remove #(let [p (get by-index %)]
-                             (and p
-                                  (not (str/blank? (str (:ip p))))
-                                  (not (str/blank? (str (:vpc-ip p))))))
-                          (indexes opts))]
-      (when (seq missing)
-        (str "the compute stage did not report an address for node"
-             (when (> (count missing) 1) "s") " "
-             (str/join ", " missing)
-             ". Refusing to render a partial cluster: a quorum string that "
-             "names fewer voters than the cluster has will start and then "
-             "fail to elect a controller.")))))
+   (mapv #(automq-node opts %) (once-cluster/nodes spec opts params))))
 
 ;; ----------------------------------------------------------------- listeners
 

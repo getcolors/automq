@@ -4,13 +4,33 @@
             [green.cli :as green-cli]
             [green.process :as process]
             [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.once.compute :as compute]
+            [io.github.getcolors.once.compute-cluster :as once-cluster]
             [io.github.getcolors.once.ssh :as once-ssh]
             [io.github.getcolors.once.validate :as once-validate]))
 
 (def profile-par (green-cli/par-name :profile))
 
+;; The registry and the spec live in `cluster`, which every node derivation
+;; needs and which this namespace already depends on for the principals; they
+;; are named here too so the lifecycle reads them from the validator, as the
+;; other delegating packages do.
+(def compute-providers
+  "The advertised compute providers and what each implies (Compute Provider
+  Standard §2, Compute Cluster Standard §2). `cluster/compute-providers`."
+  cluster/compute-providers)
+
+(def default-compute-provider
+  "What a legacy state without `params.provider` is. `cluster/default-compute-provider`."
+  cluster/default-compute-provider)
+
+(def spec
+  "How this package describes itself to ONCE's `compute-cluster`. `cluster/spec`."
+  cluster/spec)
+
 (def required
-  "Every key desired state must carry.
+  "Every key desired state must carry whichever provider is selected. The
+  provider-scoped keys come from `compute-providers`.
 
   `vultr-ssh-keys` is deliberately absent: per the SSH Keypair Standard its
   *absence* selects keygen mode, and requiring it would make a conforming
@@ -27,8 +47,6 @@
    :automq-data-r2-bucket :automq-ops-r2-bucket
    :automq-r2-endpoint :automq-r2-region
    :automq-wal-batch-interval-ms :automq-wal-max-bytes-in-batch
-   :vultr-region :vultr-plan :vultr-os-id :vultr-vpc-subnet
-   :vultr-ssh-sources :vultr-kafka-sources
    :r2-bucket :r2-endpoint])
 
 (def host-re #"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
@@ -37,7 +55,6 @@
 (def digest-re #"@sha256:[0-9a-f]{64}$")
 (def bucket-re #"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 (def endpoint-re #"^https://[a-z0-9.-]+(?::\d+)?/?$")
-(def cidr-re #"^(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}$")
 (def prefix-re #"^[a-z][a-z0-9-]{0,15}$")
 ;; kafka-storage.sh random-uuid: a UUID in unpadded URL-safe base64.
 (def cluster-id-re #"^[A-Za-z0-9_-]{22}$")
@@ -57,22 +74,17 @@
 
 (defn- port? [x] (and (integer? x) (<= 1 x 65535)))
 
-(defn- source-list-errors [opts k]
-  (let [v (get opts k)]
-    (cond
-      (missing? v) nil
-      (not (sequential? v)) [(str k " must be a YAML list of CIDR sources")]
-      (empty? v) [(str k " must list at least one source, or be removed")]
-      :else (for [[i s] (map-indexed vector v)
-                  :when (or (not (string? s)) (not (str/includes? (str s) "/")))]
-              (str k "[" i "] must be a CIDR block such as 0.0.0.0/0")))))
-
-(defn state-errors [opts]
+(defn state-errors
+  "Every problem with desired state at once: the missing keys (this package's
+  and the selected provider's), the package's own checks, then the Compute
+  Cluster Standard's — selection, the source lists, the provider rules, the
+  created network's CIDR and the topology — which are ONCE's over `spec`."
+  [opts]
   (vec
    (concat
-    (for [k required :when (missing? (get opts k))] (str k " is required"))
-    (when-not (= "vultr" (:provider-compute opts))
-      [":provider-compute must be vultr"])
+    (for [k (concat required (compute/required-keys spec opts))
+          :when (missing? (get opts k))]
+      (str k " is required"))
     (when-not (= "cloudflare" (:provider-dns opts))
       [":provider-dns must be cloudflare"])
     (when-not (contains? #{"local" "s3" "r2"} (:provider-backend opts))
@@ -182,25 +194,19 @@
                        (pos? (:automq-wal-max-bytes-in-batch opts))))
       [":automq-wal-max-bytes-in-batch must be a positive integer"])
 
-    ;; --- compute
-    (when-not (or (missing? (:vultr-os-id opts)) (integer? (:vultr-os-id opts)))
-      [":vultr-os-id must be Vultr's numeric operating-system id"])
-    (when-not (or (missing? (:vultr-vpc-subnet opts))
-                  (re-matches cidr-re (str (:vultr-vpc-subnet opts))))
-      [":vultr-vpc-subnet must be a CIDR block such as 10.40.0.0/24"])
-    (source-list-errors opts :vultr-ssh-sources)
-    (source-list-errors opts :vultr-kafka-sources)
-    (when (and (not (missing? (:vultr-name opts)))
-               (not (re-matches principal-re (str (:vultr-name opts)))))
-      [":vultr-name must be a safe 1-64 character name"]))))
+    ;; --- compute: the Compute Cluster Standard's checks are ONCE's over the
+    ;; spec — selection, the source lists, the Vultr os id and name rules, the
+    ;; canonical VPC CIDR, and the node count as a positive integer.
+    (once-cluster/state-errors spec opts))))
 
 (defn backend-secrets [opts]
   (:secrets (get-in once-validate/providers
                     [:provider-backend (:provider-backend opts)])))
 
-(def provider-secrets
-  "What talking to the providers needs, on any real event."
-  [:vultr-api-key :cloudflare-api-token])
+(def dns-secrets
+  "What talking to Cloudflare needs, on any real event. The compute
+  provider's credential comes from the registry."
+  [:cloudflare-api-token])
 
 (def application-secrets
   "What converging the cluster needs, and therefore only a create. Every SASL
@@ -209,11 +215,14 @@
   [:automq-r2-access-key-id :automq-r2-secret-access-key])
 
 (defn secret-errors
-  "Credentials a real event needs. A delete tears down infrastructure and never
-  converges anything, so it asks for the provider credentials only; demanding
-  the storage keys to destroy machines would be a lock on the exit."
+  "Credentials a real event needs: the selected compute provider's,
+  Cloudflare's, the backend's, and on a create the storage keys. A delete
+  tears down infrastructure and never converges anything, so it asks for the
+  provider credentials only; demanding the storage keys to destroy machines
+  would be a lock on the exit."
   [opts event]
-  (let [ks (concat provider-secrets
+  (let [ks (concat (compute/secrets spec opts)
+                   dns-secrets
                    (when (= :create event) application-secrets)
                    (backend-secrets opts))]
     (for [k (distinct ks) :when (missing? (get opts k))]
@@ -221,7 +230,7 @@
 
 (defn tofu-env [opts slot]
   (case slot
-    :provider-compute {:vultr-api-key "VULTR_API_KEY"}
+    :provider-compute (compute/tofu-env spec opts)
     :provider-dns {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}
     :provider-backend (:tofu-env (get-in once-validate/providers
                                          [:provider-backend (:provider-backend opts)]) {})

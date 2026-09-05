@@ -10,7 +10,7 @@ dependencies = [
 
 [tool.uv.sources]
 blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
-package-once-blue = { git = "https://github.com/getcolors/once.git", subdirectory = "blue", rev = "759eb0311b4bdf881eab813cfe5d00f76b9310cc" }
+package-once-blue = { git = "https://github.com/getcolors/once.git", subdirectory = "blue", rev = "b1628b7f8546c10fa9b768565bfd839512cb49ca" }
 
 # The ONCE pin above carries its own, older blue pin; without this override the
 # two git URLs conflict and uv refuses to resolve. The override makes this

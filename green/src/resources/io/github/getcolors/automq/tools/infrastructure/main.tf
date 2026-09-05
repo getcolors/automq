@@ -137,6 +137,7 @@ resource "vultr_instance" "node" {
 # name's ordinal — one number, so the three cannot drift apart.
 output "params" {
   value = {
+    provider = "vultr"
 <% if ssh-keygen %>    ssh_key_id = vultr_ssh_key.machine.id
 <% endif %>    nodes = [
       for i, node in vultr_instance.node : {

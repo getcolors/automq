@@ -2,10 +2,11 @@
 
 import { readPars, parName } from "red/cli";
 import * as dryRun from "red/dry-run";
-import { preflight } from "red/lifecycle";
+import { preflight, type PreflightContext } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
 import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
+import { compute, computeCluster } from "package-once-red";
 import * as cluster from "./cluster.ts";
 import * as ssh from "./ssh.ts";
 import * as sshConfig from "./ssh-config.ts";
@@ -13,7 +14,7 @@ import * as tools from "./tools.ts";
 import * as validate from "./validate.ts";
 
 export const defaults: Opts = {
-  "provider-compute": "vultr",
+  "provider-compute": validate.defaultComputeProvider,
   "provider-dns": "cloudflare",
   "provider-backend": "local",
   "compute-prevent-destroy": true,
@@ -40,31 +41,51 @@ export const defaults: Opts = {
 // Events that authenticate against Vultr and require the local toolchain.
 const checkedEvents = ["create", "delete", "validate"];
 
+// The two things `startStep` reaches outside the process — the compute state
+// and the local toolchain plus the Vultr API — injectable so tests never shell
+// out to tofu or touch the network. The defaults are the real ones.
+export interface StartDeps {
+  reader?: compute.StateReader;
+  runtimeErrors?: (opts: Opts) => Promise<string[]>;
+}
+
 export async function startStep(
   opts: Opts,
   env: Record<string, string | undefined> = process.env,
+  deps: StartDeps = {},
 ): Promise<Opts> {
+  const reader = deps.reader ?? tools.stateOutput;
+  const probe = deps.runtimeErrors ?? validate.runtimeErrors;
   // The tool and Vultr checks shell out, and preflight's validators are
   // synchronous — so they run here, over the same overlaid state preflight will
   // build, and reach the validator list through a closure. Rebuilding the
   // overlay is deliberate: reporting a missing tool only on the run *after* the
   // operator fixed their colors.yml is exactly the "one thing at a time"
-  // behaviour exit code 2 exists to avoid.
+  // behaviour exit code 2 exists to avoid. The compute state is read once here
+  // too, on the same overlaid opts — the overlay is what carries the backend
+  // credentials — and only for the two events that touch a provider; the
+  // validator and the after-validate share the one read.
   const overlaid = readPars({ ...defaults, ...opts }, env);
-  const event = typeof opts["red/event"] === "string" ? opts["red/event"] as string : undefined;
-  const runtimeErrors = !opts["red/dry-run"] && event && checkedEvents.includes(event)
-    ? await validate.runtimeErrors(overlaid)
+  const event = typeof overlaid["red/event"] === "string" ? overlaid["red/event"] as string : undefined;
+  const context: PreflightContext = { event, real: !overlaid["red/dry-run"] };
+  const runtimeErrors = context.real && event && checkedEvents.includes(event)
+    ? await probe(overlaid)
     : [];
+  const state: compute.StateRead = compute.lifecycleEvent(context)
+    ? await computeCluster.readState(overlaid, reader) : {};
   return preflight(opts, {
     defaults,
     overlay: readPars,
     validators: [
       (_opts, environment) => validate.envErrors(environment),
       (current) => validate.stateErrors(current),
-      (current, _environment, { event, real }) =>
-        real && (event === "create" || event === "delete")
-          ? validate.secretErrors(current, event)
-          : [],
+      // Compute Provider Standard §4 before the credentials: a recorded
+      // provider that differs from the selected one reports the actionable
+      // error, not a missing token for the provider that was just selected.
+      (current, _environment, ctx) => (compute.lifecycleEvent(ctx)
+        ? computeCluster.providerValidator(validate.spec, current, state.params,
+            () => validate.secretErrors(current, String(ctx.event)))
+        : []),
       (current, _environment, { event, real }) =>
         real && event === "delete" && current["compute-prevent-destroy"]
           ? [`compute destruction is protected; set ${parName("compute-prevent-destroy")}=false to delete`]
@@ -74,19 +95,16 @@ export async function startStep(
     // The machine key's create matrix and the Vultr preflight run before any
     // template is rendered: an unowned key on disk or at the provider stops the
     // run while stopping is still free. Delete fills the same template values —
-    // a destroy renders before it destroys — but checks nothing, because its
-    // key cleanup runs after the compute destroy.
+    // a destroy renders before it destroys — and adopts the recorded cluster
+    // under `once/cluster`, failing closed on a backend it cannot read and on a
+    // state that does not describe every node; but it checks no key, because
+    // its key cleanup runs after the compute destroy.
     afterValidate: async (current, _environment, { event, real }) => {
       if (real && event === "delete") {
-        const params = await tools.stateOutput(current);
-        return {
-          ...ssh.withMachineKey(current),
-          ...(params ? { "automq/params": params } : {}),
-          "red/exit": 0,
-        };
+        return computeCluster.adoptState(validate.spec, current, "delete", state);
       }
       if (real && event === "create") {
-        let next = await ssh.ensureKey(current, tools.stateOutput);
+        let next = await ssh.ensureKey(current, async () => state.params);
         if (failed(next)) return next;
         next = await ssh.preflight(ssh.withMachineKey(next));
         if (!failed(next)) next = sshConfig.preflight(next);

@@ -1,13 +1,20 @@
 {:paths ["src/clj" "src/resources"]
  :deps {org.clojure/clojure       {:mvn/version "1.12.5"}
         io.github.getcolors/green {:git/url "https://github.com/getcolors/green.git"
-                                   :git/sha "ceb4159a19ec281d60f10d11295c05c5de5f1c42"}
-        ;; The SSH Keypair Standard has one implementation, ONCE's, and this
-        ;; package reuses it rather than reimplementing it. 759eb03 carries the
-        ;; create matrix and the post-destroy cleanup; the pin cannot go below
-        ;; bc06f2f, where the machine keypair moved into the operator's ~/.ssh.
+                                   :git/sha "3f33f5d4dcce1f8d97a11b6972e13eb3f0b37654"}
+        ;; The two pins move together. Green 3f33f5d is where the SDK reports a
+        ;; tofu launch failure — a missing stage directory, a missing binary —
+        ;; as exit 127 and so as its `tofu output failed:` step error carrying
+        ;; :dir, the way red and blue always did; ONCE's `read-state` trusts
+        ;; that step error alone, so below it a fresh clone's create crashes
+        ;; instead of reporting its credentials. ONCE b1628b7 carries
+        ;; `compute-cluster`, the one implementation of the Compute Cluster
+        ;; Standard this package delegates its node set to; below it, 759eb03
+        ;; carries the keypair create matrix and the post-destroy cleanup, and
+        ;; bc06f2f moved the machine keypair into the operator's ~/.ssh. The
+        ;; ONCE pin cannot go below any of them.
         io.github.getcolors/once  {:git/url "https://github.com/getcolors/once.git"
-                                   :git/sha "759eb0311b4bdf881eab813cfe5d00f76b9310cc"
+                                   :git/sha "b1628b7f8546c10fa9b768565bfd839512cb49ca"
                                    :deps/root "green"}}
  :aliases {:dev {:extra-paths ["test/clj" "test/resources"]}
            :test {:extra-paths ["test/clj" "test/resources"]

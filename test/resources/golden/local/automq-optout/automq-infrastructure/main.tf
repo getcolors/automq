@@ -124,6 +124,7 @@ resource "vultr_instance" "node" {
 # name's ordinal — one number, so the three cannot drift apart.
 output "params" {
   value = {
+    provider = "vultr"
     nodes = [
       for i, node in vultr_instance.node : {
         index  = i

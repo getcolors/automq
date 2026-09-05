@@ -59,7 +59,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "blue", git = "https://github.com/getcolors/blue.git?rev=290f313ead5ca162875c33a049c880da017eae09" },
-    { name = "package-once-blue", git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=759eb0311b4bdf881eab813cfe5d00f76b9310cc" },
+    { name = "package-once-blue", git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=b1628b7f8546c10fa9b768565bfd839512cb49ca" },
 ]
 
 [package.metadata.requires-dev]
@@ -71,7 +71,7 @@ dev = [
 [[package]]
 name = "package-once-blue"
 version = "0.1.0"
-source = { git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=759eb0311b4bdf881eab813cfe5d00f76b9310cc#759eb0311b4bdf881eab813cfe5d00f76b9310cc" }
+source = { git = "https://github.com/getcolors/once.git?subdirectory=blue&rev=b1628b7f8546c10fa9b768565bfd839512cb49ca#b1628b7f8546c10fa9b768565bfd839512cb49ca" }
 dependencies = [
     { name = "blue" },
 ]

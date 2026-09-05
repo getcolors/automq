@@ -12,6 +12,8 @@
             [io.github.getcolors.automq.cluster :as cluster]
             [io.github.getcolors.automq.ssh-config :as ssh-config]
             [io.github.getcolors.automq.validate :as validate]
+            [io.github.getcolors.once.compute :as compute]
+            [io.github.getcolors.once.compute-cluster :as once-cluster]
             [io.github.getcolors.once.utils :as once-utils]))
 
 (def infrastructure-tool "automq-infrastructure")
@@ -27,9 +29,10 @@
 (defn spec [source target data] {:template source :target target :data data :opts template-opts})
 (defn raw-spec [target content] (sc/content-spec target content))
 
-(defn cidrs [opts k]
-  (let [v (get opts k) xs (if (sequential? v) v (str/split (str v) #"[,\s]+"))]
-    (->> xs (map (comp str/trim str)) (remove str/blank?) vec)))
+(def cidrs
+  "A source list as desired state or an overlay string carries it. ONCE's, so
+  the validator and the templates can never disagree about what an entry is."
+  compute/cidrs)
 
 (defn credential-env [opts & slots]
   (not-empty
@@ -37,41 +40,26 @@
                     (when-let [v (not-empty (str (get opts k)))] [env-var v])))
          (apply merge (map #(validate/tofu-env opts %) (conj (vec slots) :provider-backend))))))
 
-(defn- hyphenate-keys
-  "HCL object keys are snake_case and Clojure keys are kebab-case. `vpc_ip` is
-  the first output in this project with a word boundary at all — ip, user and
-  name are spelled identically in both conventions — so nothing had exposed
-  the mismatch before."
-  [m]
-  (into {} (map (fn [[k v]] [(keyword (str/replace (name (keyword k)) "_" "-")) v]))
-        (walk/keywordize-keys m)))
-
-(defn normalize-params
-  "The compute stage's `params` output.
-
-  The outer keys are deliberately NOT hyphenated: `ssh_key_id` is the SSH
-  Keypair Standard's contract with ONCE's create preflight, which reads it
-  verbatim. Only the node entries are converted."
-  [params]
-  (-> (walk/keywordize-keys params)
-      (update :nodes #(mapv hyphenate-keys %))))
-
-(defn output-params
-  "The compute stage's `params` output, normalized."
-  [result]
-  (some-> (get-in result [:tofu/outputs :params]) normalize-params))
-
 (defn state-output
-  "The applied `params`, or nil when no state is readable. The SSH Keypair
-  Standard's create matrix keys on this best-effort read: an unreadable state
-  (a fresh clone, a missing backend) counts as absent."
+  "The reader ONCE's `read-state` takes: the recorded `params` map, keywordized
+  with the underscores kept (`:ssh_key_id`, `:vpc_ip`), or nil when the state
+  is readable and holds no compute. This package's pre-adoption states already
+  recorded `params` in this shape, only without `provider`, which the Compute
+  Provider Standard reads as the default provider — so there is no legacy
+  translation. An unreadable backend is whatever `green.tofu/outputs` throws,
+  deliberately uncaught: `read-state` turns the SDK's step error into
+  `{:error message}`, and create and delete treat that differently. Kept
+  local so tests can redefine it."
   [opts]
-  (try (some-> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
-                                      (credential-env opts)))
-               normalize-params)
-       (catch Exception _ nil))) 
+  (some-> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
+                                 (credential-env opts)))
+          walk/keywordize-keys))
 
-(defn nodes [opts] (cluster/nodes opts (:nodes (:automq/params opts))))
+(defn nodes
+  "The cluster's nodes for every later stage: the recorded cluster under
+  `:once/cluster` on a real run, ONCE's fallbacks on a build."
+  [opts]
+  (cluster/nodes opts))
 
 ;; ------------------------------------------------------------------ compute
 
@@ -93,6 +81,15 @@
          :ssh-sources-hcl (tofu/hcl-list (cidrs opts :vultr-ssh-sources))
          :kafka-sources-hcl (tofu/hcl-list (cidrs opts :vultr-kafka-sources))))
 
+(defn resolved-cluster
+  "The applied compute stage's `params`, adopted under `:once/cluster` for the
+  stages that follow — or ONCE's refusal: no `params` output at all, or a node
+  set that is partial, undeclared, duplicated or incomplete, exits 1 rather
+  than rendering a quorum string against the documentation addresses."
+  [opts result]
+  (once-cluster/resolved-cluster cluster/spec opts result {}
+                                 (once-cluster/output-params result)))
+
 (defn infrastructure-step [opts]
   (let [dir (tool-dir opts infrastructure-tool)
         specs [(spec (template "infrastructure" "main.tf") (str dir "/main.tf")
@@ -103,11 +100,7 @@
       (wf/failed? result) result
       (= :build (:green/event opts)) result
       (= :delete (:green/event opts)) result
-      :else
-      (let [params (output-params result)]
-        (if-let [err (cluster/missing-node-error opts (:nodes params))]
-          (assoc result :green/exit 1 :green/err err)
-          (assoc result :automq/params params))))))
+      :else (resolved-cluster opts result))))
 
 ;; ---------------------------------------------------------------------- dns
 
@@ -175,12 +168,10 @@
 
 (defn ssh-config-hosts
   "The `~/.ssh/config` entries, as data the play loops over: the bare profile
-  pointing at node 0, then one alias per node."
+  pointing at node 0 (the spec's entry), then one alias per node. ONCE's
+  (Compute Cluster Standard §6)."
   [opts nodes*]
-  (let [alias (ssh-config/host-alias opts)]
-    (into [{:name alias :ip (:ip (first nodes*))}]
-          (map (fn [n] {:name (ssh-config/node-alias opts (:index n)) :ip (:ip n)}))
-          nodes*)))
+  (once-cluster/ssh-config-hosts cluster/spec opts nodes*))
 
 (defn ansible-local-step
   "Write or remove the `~/.ssh/config` block. The same playbook serves both
@@ -287,9 +278,11 @@
 
 (defn ansible-step [opts]
   (let [dir (tool-dir opts ansible-tool)]
-    (if (and (= :delete (:green/event opts)) (empty? (:nodes (:automq/params opts))))
-      ;; No compute in state: there is nothing to stop, and the cleanup play
-      ;; would only fail against the placeholder addresses.
+    (if (and (= :delete (:green/event opts)) (nil? (:once/cluster opts)))
+      ;; A readable state without compute: there is nothing to stop, and the
+      ;; cleanup play would only fail against the placeholder addresses. (An
+      ;; unreadable state, or a partial one, never reaches here — the delete
+      ;; failed closed at adoption.)
       (assoc opts :green/exit 0)
       (ansible/ansible-with-spec opts
         {:dir dir :inventory "inventory.json"

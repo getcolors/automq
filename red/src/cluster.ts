@@ -7,35 +7,81 @@
 // quorum at all, and a certificate whose SAN list misses one broker fails only
 // for the client that happens to be routed there.
 //
+// The node set itself — how many nodes, their ids, the fallback addresses a
+// `build` renders with, and the refusal of a state that does not describe the
+// whole cluster — is the Compute Cluster Standard's
+// (`workspace/standards/compute-cluster.md`) and is ONCE's `computeCluster`
+// module, called with the `spec` below and never copied. What stays here is
+// AutoMQ's: broker names, the SAN list, the quorum string, listeners,
+// principals and ACLs.
+//
 // Everything here is a pure function of desired state plus the compute stage's
 // outputs, so the whole of it is reachable from the test suite and visible in
 // the goldens. Nothing in this file may read the environment, the filesystem,
 // or the network.
 
 import type { Opts } from "red/workflow";
+import { compute, computeCluster } from "package-once-red";
+
+// ---------------------------------------------------------------- the spec
+
+// provider-compute -> what that choice implies.
+//
+// `required` are the non-secret keys the provider's template interpolates,
+// `secrets` the credentials it needs through COLORS_PAR_*, `tofuEnv` the
+// subset OpenTofu reads from the process environment itself, and `network` the
+// private network the cluster's quorum crosses — created by this package from
+// `vultr-vpc-subnet`, never discovered. Keeping them together is what stops a
+// provider being validated against one set of keys and run with another. The
+// keys of this map are the advertised providers; Vultr is the only one this
+// package has a template and a golden for.
+//
+// Two keys the template reads are deliberately not required. `vultr-name` is
+// an optional override of the profile (Compute Name Standard), and
+// `vultr-ssh-keys` is meaningful by its absence (SSH Keypair Standard).
+export const computeProviders: computeCluster.ClusterRegistry = {
+  vultr: {
+    required: ["vultr-region", "vultr-plan", "vultr-os-id", "vultr-vpc-subnet",
+               "vultr-ssh-sources", "vultr-kafka-sources"],
+    secrets: ["vultr-api-key"],
+    tofuEnv: { "vultr-api-key": "VULTR_API_KEY" },
+    network: { mode: "created", key: "vultr-vpc-subnet" },
+  },
+};
+
+// The provider a deployment created before this package recorded one in its
+// compute output must be running: the only one it ever offered.
+export const defaultComputeProvider = "vultr";
 
 export const defaultNodeCount = 3;
 
-export interface Node {
-  index: number;
-  name: string;
-  "broker-name": string;
-  ip: string;
-  "vpc-ip": string;
-  user: string;
-  sudoer: string;
-}
+// How this package describes itself to ONCE's `computeCluster`. One
+// homogeneous role whose count is `automq-node-count` (three by default); the
+// bare `<profile>` alias reaches node 0, the default entry. `sources` names the
+// firewall lists the template reads — SSH must list at least one CIDR, an empty
+// Kafka list means no public Kafka access.
+export const spec: computeCluster.ClusterSpec = {
+  registry: computeProviders,
+  default: defaultComputeProvider,
+  sources: { nonEmpty: ["ssh-sources"], mayBeEmpty: ["kafka-sources"] },
+  roles: [{ role: null, countKey: "automq-node-count", count: defaultNodeCount }],
+};
 
+// ------------------------------------------------------------------- names
+
+// How many nodes the cluster has: `automq-node-count` when desired state
+// carries it, else three. ONCE's; validation refuses a present value that is
+// not a positive integer before any derivation runs.
 export function nodeCount(opts: Opts): number {
-  const n = opts["automq-node-count"];
-  return typeof n === "number" && Number.isInteger(n) ? n : defaultNodeCount;
+  return computeCluster.nodeCount(spec, opts, null) as number;
 }
 
 // Node indexes, `0..n-1`. The index is the KRaft `node.id`, the suffix in the
 // machine label, and the ordinal in the broker name: one number, so the three
-// can never disagree.
+// can never disagree. ONCE's ids are 0-based per role, which is what keeps
+// `node.id = index` true.
 export function indexes(opts: Opts): number[] {
-  return [...Array(nodeCount(opts)).keys()];
+  return computeCluster.nodeIds(spec, opts).map((id) => id.index);
 }
 
 // The public name broker `i` advertises, `b<i>.<automq-host>`.
@@ -64,17 +110,19 @@ export function certificateNames(opts: Opts): string[] {
 }
 
 // The cluster's base machine name (Compute Name Standard §1-2): the profile,
-// unless desired state overrides it with `vultr-name`.
+// unless desired state overrides it with `vultr-name`. ONCE's, so every label
+// derives from the same value.
 export function computeName(opts: Opts): string {
-  const override = String(opts["vultr-name"] ?? "");
-  return override.trim().length === 0 ? String(opts.profile ?? "") : override;
+  return compute.computeName(opts);
 }
 
-// The label of machine `i`. Numbered because there is more than one; the
-// standard names the machine after the profile, and the index disambiguates
-// without introducing a second naming scheme.
+// The label of machine `i`, `<compute-name>-<i>`: the Cluster Standard's
+// fallback name for the null role, which is also what the template labels the
+// instance. Numbered because there is more than one; the standard names the
+// machine after the profile, and the index disambiguates without introducing a
+// second naming scheme.
 export function machineName(opts: Opts, i: number): string {
-  return `${computeName(opts)}-${i}`;
+  return computeCluster.fallbackNodeName(spec, opts, { role: null, index: i });
 }
 
 export function machineNames(opts: Opts): string[] {
@@ -83,71 +131,48 @@ export function machineNames(opts: Opts): string[] {
 
 // --------------------------------------------------------------------- nodes
 
-// What a credential-free `build` renders in place of a compute output. Fixed
-// addresses from the documentation ranges (RFC 5737 / RFC 1918) so a build is
-// byte-identical on every workstation and the committed goldens mean something.
-export const fallbackNode = {
-  ip: "192.0.2.10", "vpc-ip": "10.40.0.10", user: "root", sudoer: "root",
-};
-
-export function fallbackNodes(opts: Opts): Node[] {
-  return indexes(opts).map((i) => ({
-    ...fallbackNode,
-    index: i,
-    name: machineName(opts, i),
-    ip: `192.0.2.${10 + i}`,
-    "vpc-ip": `10.40.0.${10 + i}`,
-    "broker-name": brokerName(opts, i),
-  }));
+// A node as this package's renderers read it: ONCE's five fields with `vpc-ip`
+// in the package's kebab spelling, plus the broker name it advertises, plus
+// whatever else the template recorded.
+export interface Node {
+  role: string | null;
+  index: number;
+  name: string;
+  ip: string;
+  "vpc-ip": string;
+  user: string;
+  sudoer: string;
+  "broker-name": string;
+  [extra: string]: unknown;
 }
 
-function byIndex(params: Record<string, unknown>[]): Map<number, Record<string, unknown>> {
-  return new Map(params.map((p) => [Number(p.index), p]));
+// One of ONCE's nodes as this package's renderers read it: `vpc-ip` in the
+// package's kebab spelling — the templates, the inventory and the quorum string
+// were written against it, and adapting here keeps every rendered file
+// byte-identical — plus the broker name this node advertises.
+function automqNode(opts: Opts, node: computeCluster.Node): Node {
+  const { vpc_ip, ...rest } = node;
+  return { ...rest, "vpc-ip": vpc_ip as string, "broker-name": brokerName(opts, node.index) } as Node;
+}
+
+// What a credential-free `build` renders in place of a compute output: ONCE's
+// fallbacks — public addresses from `192.0.2.0/24`, private ones cut from
+// `vultr-vpc-subnet`, offset 10 — so a build is byte-identical on every
+// workstation and the committed goldens mean something.
+export function fallbackNodes(opts: Opts): Node[] {
+  return computeCluster.fallbackNodes(spec, opts).map((node) => automqNode(opts, node));
 }
 
 // The node list the Ansible stage and the templates consume.
 //
-// `params` is the compute stage's output, a list of maps keyed by index. On a
-// build there is none, so the fallbacks stand in. On a real run a missing or
-// short list is a hard error rather than a silent partial cluster: rendering a
-// two-voter quorum string for a three-node cluster would produce a cluster that
-// starts and then cannot elect.
-export function nodes(opts: Opts, params?: unknown): Node[] {
-  const list = Array.isArray(params) ? params as Record<string, unknown>[] : [];
-  if (list.length === 0) return fallbackNodes(opts);
-  const found = byIndex(list);
-  return indexes(opts).map((i) => {
-    const p = found.get(i) ?? {};
-    const carried: Record<string, unknown> = {};
-    for (const key of ["ip", "vpc-ip", "user", "sudoer"]) {
-      if (p[key] !== undefined) carried[key] = p[key];
-    }
-    return {
-      ...fallbackNode,
-      index: i,
-      name: machineName(opts, i),
-      "broker-name": brokerName(opts, i),
-      ...carried,
-    } as Node;
-  });
-}
-
-// The error for a compute output that does not cover every index, or that omits
-// an address. Returned rather than thrown so the workflow can report it the
-// same way it reports every other failure.
-export function missingNodeError(opts: Opts, params?: unknown): string | undefined {
-  const list = Array.isArray(params) ? params as Record<string, unknown>[] : [];
-  if (list.length === 0) return undefined;
-  const found = byIndex(list);
-  const missing = indexes(opts).filter((i) => {
-    const p = found.get(i);
-    return !(p && String(p.ip ?? "").trim() !== "" && String(p["vpc-ip"] ?? "").trim() !== "");
-  });
-  if (missing.length === 0) return undefined;
-  return `the compute stage did not report an address for node${missing.length > 1 ? "s" : ""} ` +
-    `${missing.join(", ")}. Refusing to render a partial cluster: a quorum string that ` +
-    "names fewer voters than the cluster has will start and then " +
-    "fail to elect a controller.";
+// `params` is the compute stage's recorded `params` map, adopted under
+// `once/cluster` on a real run. On a build there is none, so the fallbacks
+// stand in. On a real run ONCE refuses a state that does not describe every
+// declared node with every field, and never substitutes a fallback: rendering
+// a two-voter quorum string for a three-node cluster would produce a cluster
+// that starts and then cannot elect.
+export function nodes(opts: Opts, params?: computeCluster.ClusterParams | null): Node[] {
+  return computeCluster.nodes(spec, opts, params).map((node) => automqNode(opts, node));
 }
 
 // ----------------------------------------------------------------- listeners

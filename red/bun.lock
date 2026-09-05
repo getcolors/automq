@@ -5,7 +5,7 @@
     "": {
       "name": "package-automq-red-dev",
       "dependencies": {
-        "package-once-red": "github:getcolors/once#759eb0311b4bdf881eab813cfe5d00f76b9310cc",
+        "package-once-red": "github:getcolors/once#b1628b7f8546c10fa9b768565bfd839512cb49ca",
         "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
       },
       "devDependencies": {
@@ -61,7 +61,7 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
-    "package-once-red": ["package-once-red@github:getcolors/once#759eb03", { "peerDependencies": { "red": "*" }, "optionalPeers": ["red"] }, "getcolors-once-759eb03", "sha512-NpSxktsTQAA1q7nA0PX2nDOKWfiWwjosKvvVowvn1l8AU9JxJmvhOYCTAxISoIbElUQGbPs7wN/gymY/FCFZ1A=="],
+    "package-once-red": ["package-once-red@github:getcolors/once#b1628b7", { "peerDependencies": { "red": "*" }, "optionalPeers": ["red"] }, "getcolors-once-b1628b7", "sha512-K5TATjm7tG+5BlLvIFUIUtgV2n0E128YjnDpUixp/+PSF2yEA73AXHbUwZte9Tkpk2lznT0QEj4ttwNYVgUXTQ=="],
 
     "red": ["red@github:getcolors/red#db9bfe6", { "dependencies": { "zod": "^4.0.0" } }, "getcolors-red-db9bfe6", "sha512-3uHKgJeICb/ljQxiTzLTLUdFNfNqvzPGv08X4LRVOU5uk7wmT7wEuVag/xhj87Qn6tvCtAG8uDp8IbIROBGmmg=="],
 

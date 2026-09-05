@@ -11,6 +11,8 @@ import re
 
 from blue.cli import par_name
 from blue.runtime import runtime
+from package_once_blue import compute as once_compute
+from package_once_blue import compute_cluster as once_cluster
 from package_once_blue import ssh as once_ssh
 from package_once_blue.validate import providers as once_providers
 
@@ -18,7 +20,16 @@ from . import cluster
 
 profile_par = par_name("profile")
 
-# Every key desired state must carry.
+# The registry and the spec live in `cluster`, which every node derivation
+# needs and which this module already depends on for the principals; they are
+# named here too so the lifecycle reads them from the validator, as the other
+# delegating packages do.
+compute_providers = cluster.compute_providers
+default_compute_provider = cluster.default_compute_provider
+spec = cluster.spec
+
+# Every key desired state must carry whichever provider is selected. The
+# provider-scoped keys come from `compute_providers`.
 #
 # `vultr-ssh-keys` is deliberately absent: per the SSH Keypair Standard its
 # *absence* selects keygen mode, and requiring it would make a conforming
@@ -36,8 +47,6 @@ required = [
     "automq-data-r2-bucket", "automq-ops-r2-bucket",
     "automq-r2-endpoint", "automq-r2-region",
     "automq-wal-batch-interval-ms", "automq-wal-max-bytes-in-batch",
-    "vultr-region", "vultr-plan", "vultr-os-id", "vultr-vpc-subnet",
-    "vultr-ssh-sources", "vultr-kafka-sources",
     "r2-bucket", "r2-endpoint",
 ]
 
@@ -47,7 +56,6 @@ image_re = re.compile(r"[^\s:@]+(?:/[^\s:@]+)*(?::[^\s:@]+)?(?:@sha256:[0-9a-f]{
 digest_re = re.compile(r"@sha256:[0-9a-f]{64}$")
 bucket_re = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 endpoint_re = re.compile(r"https://[a-z0-9.-]+(?::\d+)?/?")
-cidr_re = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}")
 prefix_re = re.compile(r"[a-z][a-z0-9-]{0,15}")
 # kafka-storage.sh random-uuid: a UUID in unpadded URL-safe base64.
 cluster_id_re = re.compile(r"[A-Za-z0-9_-]{22}")
@@ -87,24 +95,16 @@ def _port(value) -> bool:
     return _int(value) and 1 <= value <= 65535
 
 
-def _source_list_errors(opts: dict, key: str) -> list[str]:
-    value = opts.get(key)
-    if missing(value):
-        return []
-    if not isinstance(value, list):
-        return [f":{key} must be a YAML list of CIDR sources"]
-    if not value:
-        return [f":{key} must list at least one source, or be removed"]
-    return [f":{key}[{i}] must be a CIDR block such as 0.0.0.0/0"
-            for i, source in enumerate(value)
-            if not isinstance(source, str) or "/" not in _s(source)]
-
-
 def state_errors(opts: dict) -> list[str]:
+    """Every problem with desired state at once: the missing keys (this
+    package's and the selected provider's), the package's own checks, then the
+    Compute Cluster Standard's — selection, the source lists, the provider
+    rules, the created network's CIDR and the topology — which are ONCE's over
+    `spec`."""
     errors: list[str] = []
-    errors += [f":{k} is required" for k in required if missing(opts.get(k))]
-    if opts.get("provider-compute") != "vultr":
-        errors.append(":provider-compute must be vultr")
+    errors += [f":{k} is required"
+               for k in [*required, *once_compute.required_keys(spec, opts)]
+               if missing(opts.get(k))]
     if opts.get("provider-dns") != "cloudflare":
         errors.append(":provider-dns must be cloudflare")
     if opts.get("provider-backend") not in ("local", "s3", "r2"):
@@ -213,17 +213,10 @@ def state_errors(opts: dict) -> list[str]:
     if not (missing(batch) or (_int(batch) and batch > 0)):
         errors.append(":automq-wal-max-bytes-in-batch must be a positive integer")
 
-    # --- compute
-    if not (missing(opts.get("vultr-os-id")) or _int(opts.get("vultr-os-id"))):
-        errors.append(":vultr-os-id must be Vultr's numeric operating-system id")
-    if not (missing(opts.get("vultr-vpc-subnet"))
-            or cidr_re.fullmatch(_s(opts.get("vultr-vpc-subnet")))):
-        errors.append(":vultr-vpc-subnet must be a CIDR block such as 10.40.0.0/24")
-    errors += _source_list_errors(opts, "vultr-ssh-sources")
-    errors += _source_list_errors(opts, "vultr-kafka-sources")
-    if (not missing(opts.get("vultr-name"))
-            and not principal_re.fullmatch(_s(opts.get("vultr-name")))):
-        errors.append(":vultr-name must be a safe 1-64 character name")
+    # --- compute: the Compute Cluster Standard's checks are ONCE's over the
+    # spec — selection, the source lists, the Vultr os id and name rules, the
+    # canonical VPC CIDR, and the node count as a positive integer.
+    errors += once_cluster.state_errors(spec, opts)
     return errors
 
 
@@ -232,8 +225,9 @@ def backend_secrets(opts: dict) -> list[str]:
     return entry.get("secrets", [])
 
 
-# What talking to the providers needs, on any real event.
-provider_secrets = ["vultr-api-key", "cloudflare-api-token"]
+# What talking to Cloudflare needs, on any real event. The compute provider's
+# credential comes from the registry.
+dns_secrets = ["cloudflare-api-token"]
 
 # What converging the cluster needs, and therefore only a create. Every SASL
 # password, the keystore password, and the SCRAM salts are generated on the
@@ -242,11 +236,13 @@ application_secrets = ["automq-r2-access-key-id", "automq-r2-secret-access-key"]
 
 
 def secret_errors(opts: dict, event: str) -> list[str]:
-    """Credentials a real event needs. A delete tears down infrastructure and
-    never converges anything, so it asks for the provider credentials only;
-    demanding the storage keys to destroy machines would be a lock on the
-    exit."""
-    keys = [*provider_secrets,
+    """Credentials a real event needs: the selected compute provider's,
+    Cloudflare's, the backend's, and on a create the storage keys. A delete
+    tears down infrastructure and never converges anything, so it asks for the
+    provider credentials only; demanding the storage keys to destroy machines
+    would be a lock on the exit."""
+    keys = [*once_compute.secrets(spec, opts),
+            *dns_secrets,
             *(application_secrets if event == "create" else []),
             *backend_secrets(opts)]
     return [f"required credential is not set: {par_name(k)}"
@@ -255,7 +251,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
 
 def tofu_env(opts: dict, slot: str) -> dict[str, str]:
     if slot == "provider-compute":
-        return {"vultr-api-key": "VULTR_API_KEY"}
+        return once_compute.tofu_env(spec, opts)
     if slot == "provider-dns":
         return {"cloudflare-api-token": "CLOUDFLARE_API_TOKEN"}
     if slot == "provider-backend":

@@ -1,26 +1,46 @@
 import json
 import re
 
-from conftest import applied, fixture
+from conftest import PARAMS, applied, fixture
 from package_automq_blue import tools
 
 opts = applied()
 
 
-def test_node_keys_are_hyphenated_but_ssh_key_id_is_not():
-    # Two conventions meet at this boundary and only one of them may win per
-    # key. Node entries become kebab-case, because that is what the rest of the
-    # package reads. `ssh_key_id` stays verbatim, because it is the SSH Keypair
-    # Standard's contract with ONCE's create preflight — hyphenating it makes
-    # the preflight report a key this deployment created as foreign.
-    params = tools.normalize_params({
-        "ssh_key_id": "7692e92a",
-        "nodes": [{"index": 0, "ip": "203.0.113.10", "vpc_ip": "10.40.0.4", "user": "root"}]})
-    assert params["ssh_key_id"] == "7692e92a"
-    assert "ssh-key-id" not in params
-    node = params["nodes"][0]
-    assert node["vpc-ip"] == "10.40.0.4"
+def test_the_adopted_cluster_reaches_the_renderers_respelled():
+    # ONCE records `vpc_ip` and `ssh_key_id` with underscores — the latter is
+    # the SSH Keypair Standard's contract with ONCE's create preflight and must
+    # stay verbatim on the params map. The renderers read `vpc-ip`, so the node
+    # wrapper respells that one key and nothing else.
+    node = tools.nodes(opts)[0]
+    assert opts["once/cluster"]["ssh_key_id"] == "7692e92a"
+    assert node["vpc-ip"] == "10.40.0.3"
     assert "vpc_ip" not in node
+    assert node["name"] == "automq-vultr-0"
+
+
+def test_the_compute_stage_refuses_anything_but_the_whole_cluster():
+    # The real create's infrastructure step hands its tofu outputs here. No
+    # `params` output at all, or a node set that is partial or incomplete, is
+    # exit 1 with ONCE's message rather than a quorum string against
+    # 192.0.2.10; the whole cluster lands under `once/cluster`.
+    def result(p):
+        return {"blue/exit": 0, "tofu/outputs": {"params": p} if p else {}}
+
+    none = tools.resolved_cluster(opts, result(None))
+    assert none["blue/exit"] == 1
+    assert none["blue/err"] == ("compute produced no params output; refusing to "
+                                "converge against the documentation addresses")
+    partial = tools.resolved_cluster(opts, result({**PARAMS, "nodes": PARAMS["nodes"][:2]}))
+    assert partial["blue/exit"] == 1
+    assert partial["blue/err"] == "the compute stage did not report nodes this package declares: 2"
+    incomplete = tools.resolved_cluster(opts, result({**PARAMS, "nodes": [
+        PARAMS["nodes"][0], PARAMS["nodes"][1], {**PARAMS["nodes"][2], "ip": None}]}))
+    assert incomplete["blue/exit"] == 1
+    assert "did not report a complete node" in incomplete["blue/err"]
+    whole = tools.resolved_cluster(opts, result(PARAMS))
+    assert whole["blue/exit"] == 0
+    assert whole["once/cluster"] == PARAMS
 
 
 def test_the_zone_is_the_registrable_domain():
@@ -56,6 +76,8 @@ def test_ssh_config_hosts_point_the_bare_alias_at_node_zero():
     assert hosts[0] == {"name": "automq-vultr", "ip": "203.0.113.10"}
     assert [h["name"] for h in hosts] == [
         "automq-vultr", "automq-vultr-0", "automq-vultr-1", "automq-vultr-2"]
+    assert [h["ip"] for h in hosts] == [
+        "203.0.113.10", "203.0.113.10", "203.0.113.11", "203.0.113.12"]
 
 
 def test_the_ansible_data_carries_no_credential():
@@ -99,8 +121,9 @@ def test_the_ansible_stage_renders_the_whole_cluster_tree():
 
 
 async def test_a_delete_with_no_compute_in_state_stops_instead_of_converging():
-    # There is nothing to stop, and the cleanup play would only fail against the
-    # placeholder addresses.
+    # A readable state without compute adopted nothing: there is nothing to
+    # stop, and the cleanup play would only fail against the placeholder
+    # addresses.
     result = await tools.ansible_step(fixture({"blue/event": "delete"}))
     assert result["blue/exit"] == 0
 

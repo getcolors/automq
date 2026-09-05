@@ -147,6 +147,24 @@ compute destroy, the keypair *after* it.
 This deployment claims `<profile>` and `<profile>-<n>` for each node, and the
 adoption check covers all of them.
 
+## The cluster is ONCE's
+
+The node set is delegated to ONCE's `compute-cluster` namespace per
+`../workspace/standards/compute-cluster.md`, of which this package is the
+reference consumer. `cluster.clj` (`cluster.ts`, `cluster.py`) owns the
+`compute-providers` registry and the `spec` — one homogeneous role counted by
+`automq-node-count`, a `:created` network from `vultr-vpc-subnet`, `ssh-sources`
+non-empty and `kafka-sources` may-be-empty — and calls ONCE for the node ids,
+the fallback addresses a `build` renders with, the aliases, the ssh-config
+hosts, the compute checks and their messages, `read-state`, `resolved-cluster`
+and `adopt-state`. The adopted cluster lives at `:once/cluster`; the package's
+`nodes` wrapper respells ONCE's `:vpc_ip` as the `:vpc-ip` the renderers read
+and adds each node's broker name, so no template changed. A real delete now
+fails closed on a backend it cannot read and on a state that does not describe
+every node, where it once proceeded on nil. What stays here is AutoMQ's: broker
+names, the SAN list, the quorum string, listeners, principals, ACLs, and the
+odd-count rule. Do not copy a `compute-cluster` function into this package.
+
 `build` and `--dry-run` render `/home/build-placeholder/.ssh/<profile>` rather
 than reading `~/.ssh`, which is what makes the committed goldens mean the same
 thing on every workstation.
@@ -154,7 +172,7 @@ thing on every workstation.
 ## Commands
 
 ```sh
-cd green && bb test          # 47 tests
+cd green && bb test          # 58 tests
 cd green && bb golden        # two fixtures: keygen and opt-out
 cd green && bb golden:accept # only after reading the diff
 cd red   && bun test && bun run typecheck
@@ -175,9 +193,12 @@ must not touch `~/.ssh`.
 
 Every colour pins its own SDK and its own ONCE: `green/deps.edn`,
 `red/package.json`, `blue/pyproject.toml`. The ONCE pin cannot go below
-`bc06f2f`, where the machine keypair moved into the operator's `~/.ssh`, and the
-three colours are kept on the same ONCE commit — the SSH Keypair Standard has
-one implementation per colour and they must agree. Use `GREEN_LIB_ROOT`,
+`b1628b7`, where `compute-cluster` landed (nor, further back, `bc06f2f`, where
+the machine keypair moved into the operator's `~/.ssh`), and the three colours
+are kept on the same ONCE commit — the SSH Keypair and Compute Cluster
+Standards have one implementation per colour and they must agree. The green
+SDK pin cannot go below `3f33f5d`, where a tofu launch failure became the step
+error ONCE's `read-state` relies on. Use `GREEN_LIB_ROOT`,
 `ONCE_LIB_ROOT`, and `AUTOMQ_LIB_ROOT` for working-tree development
 (`AUTOMQ_LIB_ROOT` names the repository root for every colour; red also accepts
 the `red/` dir directly).

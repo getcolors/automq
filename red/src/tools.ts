@@ -6,7 +6,7 @@ import { PRESERVE_JINJA_DELIMITERS, contentSpec, scaffold, type Spec, type Templ
 import * as tofu from "red/tofu";
 import { runtime } from "red/runtime";
 import { failed, type Opts } from "red/workflow";
-import { registrableDomain } from "package-once-red";
+import { compute, computeCluster, registrableDomain } from "package-once-red";
 import * as cluster from "./cluster.ts";
 import * as sshConfig from "./ssh-config.ts";
 import * as validate from "./validate.ts";
@@ -58,11 +58,9 @@ function spec(source: Template, target: string, data: Opts): Spec {
 
 const rawSpec = (target: string, content: string): Spec => contentSpec(target, content);
 
-export function cidrs(opts: Opts, key: string): string[] {
-  const value = opts[key];
-  const parts = Array.isArray(value) ? value : String(value ?? "").split(/[,\s]+/);
-  return parts.map((part) => String(part).trim()).filter((part) => part.length > 0);
-}
+// A source list as desired state or an overlay string carries it. ONCE's, so
+// the validator and the templates can never disagree about what an entry is.
+export const cidrs = compute.cidrs;
 
 export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, string> | undefined {
   const mapping: Record<string, string> = Object.assign(
@@ -79,50 +77,25 @@ export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, st
 
 export const backendCredentialEnv = (opts: Opts) => credentialEnv(opts);
 
-// HCL object keys are snake_case and the rest of this package is kebab-case.
-// `vpc_ip` is the first output in this project with a word boundary at all —
-// ip, user and name are spelled identically in both conventions — so nothing
-// had exposed the mismatch before.
-function hyphenateKeys(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).map(([key, nested]) => [key.replaceAll("_", "-"), nested]));
+// The reader ONCE's `readState` takes: the recorded `params` map with the
+// underscores kept (`ssh_key_id`, `vpc_ip`), or undefined when the state is
+// readable and holds no compute. This package's pre-adoption states already
+// recorded `params` in this shape, only without `provider`, which the Compute
+// Provider Standard reads as the default provider — so there is no legacy
+// translation. An unreadable backend is whatever `red/tofu` throws — the SDK's
+// `StepError` — deliberately uncaught: `readState` turns it into `{ error }`,
+// and create and delete treat that differently. Injectable into `startStep`,
+// so tests never shell out to tofu.
+export async function stateOutput(opts: Opts): Promise<compute.Params | undefined> {
+  const outputs = await tofu.outputs(toolDir(opts, infrastructureTool), backendCredentialEnv(opts));
+  const params = outputs.params;
+  return params && typeof params === "object" ? params as compute.Params : undefined;
 }
 
-// The compute stage's `params` output.
-//
-// The outer keys are deliberately NOT hyphenated: `ssh_key_id` is the SSH
-// Keypair Standard's contract with ONCE's create preflight, which reads it
-// verbatim. Only the node entries are converted.
-export function normalizeParams(params: unknown): Record<string, unknown> | undefined {
-  if (!params || typeof params !== "object") return undefined;
-  const map = { ...(params as Record<string, unknown>) };
-  if (Array.isArray(map.nodes)) {
-    map.nodes = (map.nodes as Record<string, unknown>[]).map(hyphenateKeys);
-  }
-  return map;
-}
-
-// The compute stage's `params` output, normalized.
-export function outputParams(result: Opts): Record<string, unknown> | undefined {
-  const outputs = result["tofu/outputs"] as Record<string, unknown> | undefined;
-  return normalizeParams(outputs?.params);
-}
-
-// The applied `params`, or undefined when no state is readable. The SSH Keypair
-// Standard's create matrix keys on this best-effort read: an unreadable state
-// (a fresh clone, a missing backend) counts as absent.
-export async function stateOutput(opts: Opts): Promise<Record<string, unknown> | undefined> {
-  try {
-    const outputs = await tofu.outputs(toolDir(opts, infrastructureTool), backendCredentialEnv(opts));
-    return normalizeParams(outputs?.params);
-  } catch {
-    return undefined;
-  }
-}
-
+// The cluster's nodes for every later stage: the recorded cluster under
+// `once/cluster` on a real run, ONCE's fallbacks on a build.
 export function nodes(opts: Opts): cluster.Node[] {
-  const params = opts["automq/params"] as Record<string, unknown> | undefined;
-  return cluster.nodes(opts, params?.nodes);
+  return cluster.nodes(opts, opts["once/cluster"] as computeCluster.ClusterParams | undefined);
 }
 
 // ------------------------------------------------------------------ compute
@@ -147,6 +120,15 @@ export function infrastructureData(opts: Opts): Opts {
   };
 }
 
+// The applied compute stage's `params`, adopted under `once/cluster` for the
+// stages that follow — or ONCE's refusal: no `params` output at all, or a node
+// set that is partial, undeclared, duplicated or incomplete, exits 1 rather
+// than rendering a quorum string against the documentation addresses.
+export function resolvedCluster(opts: Opts, result: Opts): Opts {
+  return computeCluster.resolvedCluster(cluster.spec, opts, result, {},
+    computeCluster.outputParams(result));
+}
+
 export async function infrastructureStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, infrastructureTool);
   const specs = [spec(template("infrastructure/main.tf", infrastructureMainTf),
@@ -156,10 +138,7 @@ export async function infrastructureStep(opts: Opts): Promise<Opts> {
   if (failed(result)) return result;
   if (opts["red/event"] === "build") return result;
   if (opts["red/event"] === "delete") return result;
-  const params = outputParams(result);
-  const error = cluster.missingNodeError(opts, params?.nodes);
-  if (error) return { ...result, "red/exit": 1, "red/err": error };
-  return { ...result, "automq/params": params };
+  return resolvedCluster(opts, result);
 }
 
 // ---------------------------------------------------------------------- dns
@@ -232,12 +211,10 @@ export function ansibleLocalSpecs(opts: Opts): Spec[] {
 }
 
 // The `~/.ssh/config` entries, as data the play loops over: the bare profile
-// pointing at node 0, then one alias per node.
-export function sshConfigHosts(opts: Opts, list: cluster.Node[]): Array<{ name: string; ip: string }> {
-  return [
-    { name: sshConfig.hostAlias(opts), ip: list[0]!.ip },
-    ...list.map((node) => ({ name: sshConfig.nodeAlias(opts, node.index), ip: node.ip })),
-  ];
+// pointing at node 0 (the spec's entry), then one alias per node. ONCE's
+// (Compute Cluster Standard §6).
+export function sshConfigHosts(opts: Opts, list: cluster.Node[]): computeCluster.SshConfigHost[] {
+  return computeCluster.sshConfigHosts(cluster.spec, opts, list);
 }
 
 // Write or remove the `~/.ssh/config` block. The same playbook serves both
@@ -384,11 +361,11 @@ export function ansibleSpecs(opts: Opts): Spec[] {
 
 export async function ansibleStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, ansibleTool);
-  const params = opts["automq/params"] as Record<string, unknown> | undefined;
-  const applied = Array.isArray(params?.nodes) ? params.nodes as unknown[] : [];
-  if (opts["red/event"] === "delete" && applied.length === 0) {
-    // No compute in state: there is nothing to stop, and the cleanup play would
-    // only fail against the placeholder addresses.
+  if (opts["red/event"] === "delete" && opts["once/cluster"] == null) {
+    // A readable state without compute: there is nothing to stop, and the
+    // cleanup play would only fail against the placeholder addresses. (An
+    // unreadable state, or a partial one, never reaches here — the delete
+    // failed closed at adoption.)
     return { ...opts, "red/exit": 0 };
   }
   return ansible.ansibleWithSpec(opts, {

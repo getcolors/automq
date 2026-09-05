@@ -7,6 +7,14 @@ useless, a quorum string that disagrees between nodes forms no quorum at all,
 and a certificate whose SAN list misses one broker fails only for the client
 that happens to be routed there.
 
+The node set itself — how many nodes, their ids, the fallback addresses a
+``build`` renders with, and the refusal of a state that does not describe the
+whole cluster — is the Compute Cluster Standard's
+(``workspace/standards/compute-cluster.md``) and is ONCE's ``compute_cluster``
+module, called with the ``spec`` below and never copied. What stays here is
+AutoMQ's: broker names, the SAN list, the quorum string, listeners, principals
+and ACLs.
+
 Everything here is a pure function of desired state plus the compute stage's
 outputs, so the whole of it is reachable from the test suite and visible in the
 goldens. Nothing in this file may read the environment, the filesystem, or the
@@ -15,7 +23,52 @@ network.
 
 from __future__ import annotations
 
+from package_once_blue import compute as once_compute
+from package_once_blue import compute_cluster as once_cluster
+
+# ---------------------------------------------------------------- the spec
+
+# provider-compute -> what that choice implies.
+#
+# `required` are the non-secret keys the provider's template interpolates,
+# `secrets` the credentials it needs through COLORS_PAR_*, `tofu-env` the
+# subset OpenTofu reads from the process environment itself, and `network` the
+# private network the cluster's quorum crosses — created by this package from
+# `vultr-vpc-subnet`, never discovered. Keeping them together is what stops a
+# provider being validated against one set of keys and run with another. The
+# keys of this map are the advertised providers; Vultr is the only one this
+# package has a template and a golden for.
+#
+# Two keys the template reads are deliberately not required. `vultr-name` is
+# an optional override of the profile (Compute Name Standard), and
+# `vultr-ssh-keys` is meaningful by its absence (SSH Keypair Standard).
+compute_providers: once_cluster.ClusterRegistry = {
+    "vultr": {
+        "required": ["vultr-region", "vultr-plan", "vultr-os-id", "vultr-vpc-subnet",
+                     "vultr-ssh-sources", "vultr-kafka-sources"],
+        "secrets": ["vultr-api-key"],
+        "tofu-env": {"vultr-api-key": "VULTR_API_KEY"},
+        "network": {"mode": "created", "key": "vultr-vpc-subnet"},
+    },
+}
+
+# The provider a deployment created before this package recorded one in its
+# compute output must be running: the only one it ever offered.
+default_compute_provider = "vultr"
+
 DEFAULT_NODE_COUNT = 3
+
+# How this package describes itself to ONCE's `compute_cluster`. One
+# homogeneous role whose count is `automq-node-count` (three by default); the
+# bare `<profile>` alias reaches node 0, the default entry. `sources` names the
+# firewall lists the template reads — SSH must list at least one CIDR, an empty
+# Kafka list means no public Kafka access.
+spec: once_cluster.ClusterSpec = {
+    "registry": compute_providers,
+    "default": default_compute_provider,
+    "sources": {"non_empty": ["ssh-sources"], "may_be_empty": ["kafka-sources"]},
+    "roles": [{"role": None, "count_key": "automq-node-count", "count": DEFAULT_NODE_COUNT}],
+}
 
 
 def _s(value) -> str:
@@ -27,20 +80,22 @@ def _s(value) -> str:
     return str(value)
 
 
-def _int(value) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+# ------------------------------------------------------------------- names
 
 
 def node_count(opts: dict) -> int:
-    n = opts.get("automq-node-count")
-    return n if _int(n) else DEFAULT_NODE_COUNT
+    """How many nodes the cluster has: ``automq-node-count`` when desired
+    state carries it, else three. ONCE's; validation refuses a present value
+    that is not a positive integer before any derivation runs."""
+    return once_cluster.node_count(spec, opts, None)
 
 
 def indexes(opts: dict) -> list[int]:
     """Node indexes, ``0..n-1``. The index is the KRaft ``node.id``, the suffix
     in the machine label, and the ordinal in the broker name: one number, so the
-    three can never disagree."""
-    return list(range(node_count(opts)))
+    three can never disagree. ONCE's ids are 0-based per role, which is what
+    keeps ``node.id = index`` true."""
+    return [id["index"] for id in once_cluster.node_ids(spec, opts)]
 
 
 def broker_name(opts: dict, i: int) -> str:
@@ -70,16 +125,18 @@ def certificate_names(opts: dict) -> list[str]:
 
 def compute_name(opts: dict) -> str:
     """The cluster's base machine name (Compute Name Standard §1-2): the
-    profile, unless desired state overrides it with ``vultr-name``."""
-    override = _s(opts.get("vultr-name"))
-    return _s(opts.get("profile")) if not override.strip() else override
+    profile, unless desired state overrides it with ``vultr-name``. ONCE's, so
+    every label derives from the same value."""
+    return once_compute.compute_name(opts)
 
 
 def machine_name(opts: dict, i: int) -> str:
-    """The label of machine ``i``. Numbered because there is more than one; the
-    standard names the machine after the profile, and the index disambiguates
-    without introducing a second naming scheme."""
-    return f"{compute_name(opts)}-{i}"
+    """The label of machine ``i``, ``<compute-name>-<i>``: the Cluster
+    Standard's fallback name for the None role, which is also what the template
+    labels the instance. Numbered because there is more than one; the standard
+    names the machine after the profile, and the index disambiguates without
+    introducing a second naming scheme."""
+    return once_cluster.fallback_node_name(spec, opts, {"role": None, "index": i})
 
 
 def machine_names(opts: dict) -> list[str]:
@@ -88,69 +145,36 @@ def machine_names(opts: dict) -> list[str]:
 
 # --------------------------------------------------------------------- nodes
 
-#: What a credential-free `build` renders in place of a compute output. Fixed
-#: addresses from the documentation ranges (RFC 5737 / RFC 1918) so a build is
-#: byte-identical on every workstation and the committed goldens mean something.
-FALLBACK_NODE = {"ip": "192.0.2.10", "vpc-ip": "10.40.0.10",
-                 "user": "root", "sudoer": "root"}
+
+def _automq_node(opts: dict, node: dict) -> dict:
+    """One of ONCE's nodes as this package's renderers read it: ``vpc-ip`` in
+    the package's kebab spelling — the templates, the inventory and the quorum
+    string were written against it, and adapting here keeps every rendered
+    file byte-identical — plus the broker name this node advertises."""
+    result = {k: v for k, v in node.items() if k != "vpc_ip"}
+    result["vpc-ip"] = node.get("vpc_ip")
+    result["broker-name"] = broker_name(opts, node["index"])
+    return result
 
 
 def fallback_nodes(opts: dict) -> list[dict]:
-    return [{**FALLBACK_NODE,
-             "index": i,
-             "name": machine_name(opts, i),
-             "ip": f"192.0.2.{10 + i}",
-             "vpc-ip": f"10.40.0.{10 + i}",
-             "broker-name": broker_name(opts, i)}
-            for i in indexes(opts)]
-
-
-def _by_index(params: list) -> dict[int, dict]:
-    return {int(p.get("index")): p for p in params}
+    """What a credential-free `build` renders in place of a compute output:
+    ONCE's fallbacks — public addresses from ``192.0.2.0/24``, private ones cut
+    from ``vultr-vpc-subnet``, offset 10 — so a build is byte-identical on every
+    workstation and the committed goldens mean something."""
+    return [_automq_node(opts, n) for n in once_cluster.fallback_nodes(spec, opts)]
 
 
 def nodes(opts: dict, params=None) -> list[dict]:
     """The node list the Ansible stage and the templates consume.
 
-    ``params`` is the compute stage's output, a list of maps keyed by index. On
-    a build there is none, so the fallbacks stand in. On a real run a missing or
-    short list is a hard error rather than a silent partial cluster: rendering a
-    two-voter quorum string for a three-node cluster would produce a cluster
-    that starts and then cannot elect."""
-    if not params:
-        return fallback_nodes(opts)
-    found = _by_index(list(params))
-    result = []
-    for i in indexes(opts):
-        p = found.get(i) or {}
-        carried = {k: p[k] for k in ("ip", "vpc-ip", "user", "sudoer") if k in p}
-        result.append({**FALLBACK_NODE,
-                       "index": i,
-                       "name": machine_name(opts, i),
-                       "broker-name": broker_name(opts, i),
-                       **carried})
-    return result
-
-
-def missing_node_error(opts: dict, params=None) -> str | None:
-    """The error for a compute output that does not cover every index, or that
-    omits an address. Returned rather than raised so the workflow can report it
-    the same way it reports every other failure."""
-    if not params:
-        return None
-    found = _by_index(list(params))
-    missing = [i for i in indexes(opts)
-               if not (found.get(i)
-                       and _s(found[i].get("ip")).strip()
-                       and _s(found[i].get("vpc-ip")).strip())]
-    if not missing:
-        return None
-    return ("the compute stage did not report an address for node"
-            f"{'s' if len(missing) > 1 else ''} "
-            f"{', '.join(str(i) for i in missing)}"
-            ". Refusing to render a partial cluster: a quorum string that "
-            "names fewer voters than the cluster has will start and then "
-            "fail to elect a controller.")
+    ``params`` is the compute stage's recorded ``params`` map, adopted under
+    ``once/cluster`` on a real run. On a build there is none, so the fallbacks
+    stand in. On a real run ONCE refuses a state that does not describe every
+    declared node with every field, and never substitutes a fallback:
+    rendering a two-voter quorum string for a three-node cluster would produce
+    a cluster that starts and then cannot elect."""
+    return [_automq_node(opts, n) for n in once_cluster.nodes(spec, opts, params)]
 
 
 # ----------------------------------------------------------------- listeners

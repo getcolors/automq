@@ -1,9 +1,12 @@
 (ns io.github.getcolors.automq.cluster-test
   (:require [clojure.test :refer [deftest is testing]]
-            [io.github.getcolors.automq.cluster :as cluster]))
+            [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.once.compute-cluster :as once-cluster]))
 
 (def opts
   {:profile "automq-vultr"
+   :provider-compute "vultr"
+   :vultr-vpc-subnet "10.40.0.0/24"
    :automq-node-count 3
    :automq-host "automq.example.com"
    :automq-broker-name-prefix "b"
@@ -11,10 +14,30 @@
    :automq-internal-port 9094
    :automq-controller-port 9093})
 
+;; The compute stage's recorded `params`, as ONCE reads it: snake_case node
+;; keys, every field present.
 (def params
-  [{:index 0 :ip "203.0.113.10" :vpc-ip "10.40.0.3" :user "root"}
-   {:index 1 :ip "203.0.113.11" :vpc-ip "10.40.0.4" :user "root"}
-   {:index 2 :ip "203.0.113.12" :vpc-ip "10.40.0.5" :user "root"}])
+  {:provider "vultr" :ssh_key_id "7692e92a"
+   :nodes [{:index 0 :ip "203.0.113.10" :vpc_ip "10.40.0.3" :user "root" :sudoer "root" :name "automq-vultr-0"}
+           {:index 1 :ip "203.0.113.11" :vpc_ip "10.40.0.4" :user "root" :sudoer "root" :name "automq-vultr-1"}
+           {:index 2 :ip "203.0.113.12" :vpc_ip "10.40.0.5" :user "root" :sudoer "root" :name "automq-vultr-2"}]})
+
+(deftest the-spec-describes-one-homogeneous-vultr-cluster
+  ;; The Compute Cluster Standard's spec-content test: the shape ONCE is handed
+  ;; is data, and this is what that data must say.
+  (is (= [] (once-cluster/spec-errors cluster/spec)))
+  (is (= [{:role nil :count-key :automq-node-count :count 3}] (:roles cluster/spec)))
+  (is (= {:role nil :index 0} (once-cluster/entry-id cluster/spec))
+      "the bare profile alias reaches node 0")
+  (is (= {:non-empty ["ssh-sources"] :may-be-empty ["kafka-sources"]} (:sources cluster/spec)))
+  (is (= "vultr" (:default cluster/spec)))
+  (is (= ["vultr"] (keys (:registry cluster/spec))))
+  (is (= {:mode :created :key :vultr-vpc-subnet}
+         (get-in cluster/spec [:registry "vultr" :network]))
+      "the quorum crosses a VPC this package creates from vultr-vpc-subnet")
+  (is (not (contains? cluster/spec :fallback-subnet))
+      "a created network cuts its fallbacks from the CIDR key, not a stand-in")
+  (is (= [:vultr-api-key] (get-in cluster/spec [:registry "vultr" :secrets]))))
 
 (deftest names-derive-from-one-index
   (testing "the machine label, the node id and the broker ordinal are one number"
@@ -54,23 +77,29 @@
            (cluster/advertised-listeners opts n)))))
 
 (deftest a-build-renders-fixed-addresses
-  (testing "documentation-range addresses, so goldens mean the same everywhere"
+  (testing "ONCE's fallbacks: TEST-NET-1 publicly, the VPC subnet privately, offset 10"
     (let [ns* (cluster/nodes opts nil)]
       (is (= 3 (count ns*)))
       (is (= ["192.0.2.10" "192.0.2.11" "192.0.2.12"] (mapv :ip ns*)))
-      (is (every? #(re-matches #"10\.40\.0\.\d+" (:vpc-ip %)) ns*)))))
+      (is (= ["10.40.0.10" "10.40.0.11" "10.40.0.12"] (mapv :vpc-ip ns*)))
+      (is (= ["automq-vultr-0" "automq-vultr-1" "automq-vultr-2"] (mapv :name ns*)))
+      (is (= ["b0.automq.example.com" "b1.automq.example.com" "b2.automq.example.com"]
+             (mapv :broker-name ns*))))))
 
-(deftest a-partial-compute-output-is-an-error-not-a-smaller-cluster
-  ;; Rendering a two-voter quorum for a three-node cluster produces something
-  ;; that starts and then cannot elect, which is far worse than refusing.
-  (is (nil? (cluster/missing-node-error opts params)))
-  (is (re-find #"node 2" (cluster/missing-node-error opts (butlast params))))
-  (is (re-find #"quorum string"
-               (cluster/missing-node-error opts [{:index 0 :ip "1.2.3.4" :vpc-ip ""}
-                                                 {:index 1 :ip "1.2.3.5" :vpc-ip "10.0.0.2"}
-                                                 {:index 2 :ip "1.2.3.6" :vpc-ip "10.0.0.3"}])))
-  (testing "no output at all is a build, not a broken cluster"
-    (is (nil? (cluster/missing-node-error opts nil)))))
+(deftest nodes-on-a-real-run-come-from-state-in-the-renderers-spelling
+  ;; ONCE hands back every node as recorded, `:vpc_ip` and all; this package's
+  ;; templates were written against `:vpc-ip`, so the wrapper respells it and
+  ;; adds the broker name. Nothing else is touched: the name is the label the
+  ;; template gave the instance, never recomputed, and extension fields ride
+  ;; through.
+  (let [recorded (assoc-in params [:nodes 1 :name] "renamed-in-console")
+        ns* (cluster/nodes opts (update-in recorded [:nodes 0] assoc :extra "kept"))]
+    (is (= ["203.0.113.10" "203.0.113.11" "203.0.113.12"] (mapv :ip ns*)))
+    (is (= ["10.40.0.3" "10.40.0.4" "10.40.0.5"] (mapv :vpc-ip ns*)))
+    (is (not-any? #(contains? % :vpc_ip) ns*))
+    (is (= "renamed-in-console" (:name (second ns*))))
+    (is (= "kept" (:extra (first ns*))))
+    (is (= "b1.automq.example.com" (:broker-name (second ns*))))))
 
 (deftest principals-are-distinct-and-the-client-is-not-a-superuser
   (is (= ["automq-admin" "automq-broker" "automq"] (cluster/scram-principals opts)))

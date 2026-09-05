@@ -136,6 +136,7 @@ resource "vultr_instance" "node" {
 # name's ordinal — one number, so the three cannot drift apart.
 output "params" {
   value = {
+    provider = "vultr"
     ssh_key_id = vultr_ssh_key.machine.id
     nodes = [
       for i, node in vultr_instance.node : {

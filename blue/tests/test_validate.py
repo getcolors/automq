@@ -91,10 +91,26 @@ def test_the_destroy_guard_accepts_the_one_run_override():
     assert matching(fixture({"compute-prevent-destroy": "yes"}), "must be true or false")
 
 
-def test_sources_must_be_cidr_lists():
-    assert matching(fixture({"vultr-kafka-sources": "0.0.0.0/0"}), "YAML list")
-    assert matching(fixture({"vultr-ssh-sources": ["1.2.3.4"]}), "CIDR block")
-    assert matching(fixture({"vultr-ssh-sources": []}), "at least one source")
+def test_the_compute_checks_are_the_cluster_standards():
+    # Selection, the source lists, the created network's CIDR and the node
+    # count are ONCE's over the spec, in ONCE's words. The package's own
+    # cluster-shape rules still apply beside them.
+    assert errors(fixture({"provider-compute": "digitalocean"})) == [
+        ":provider-compute must be one of vultr"]
+    assert errors(fixture({"vultr-ssh-sources": []})) == [
+        ":vultr-ssh-sources must list at least one CIDR"]
+    assert errors(fixture({"vultr-ssh-sources": ["1.2.3.4"]})) == [
+        ':vultr-ssh-sources entry "1.2.3.4" is not an IPv4 or IPv6 CIDR']
+    # An empty Kafka list means no public Kafka access, not a mistake.
+    assert errors(fixture({"vultr-kafka-sources": []})) == []
+    # The VPC must be a network, host bits zero.
+    assert errors(fixture({"vultr-vpc-subnet": "10.40.0.1/24"})) == [
+        ":vultr-vpc-subnet must be a canonical IPv4 network such as 10.40.0.0/24"]
+    # A present count that is not a positive integer is refused twice: ONCE's
+    # rule and the quorum's.
+    reported = errors(fixture({"automq-node-count": "three"}))
+    assert ":automq-node-count must be a positive integer" in reported
+    assert ":automq-node-count must be an integer" in reported
 
 
 def test_the_profile_overlay_is_refused():

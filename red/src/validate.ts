@@ -7,13 +7,22 @@
 import { parName } from "red/cli";
 import { runtime, type ExecResult } from "red/runtime";
 import type { Opts } from "red/workflow";
-import { providers } from "package-once-red";
+import { compute, computeCluster, providers } from "package-once-red";
 import * as cluster from "./cluster.ts";
 import { onceSsh } from "./once.ts";
 
 export const profilePar = parName("profile");
 
-// Every key desired state must carry.
+// The registry and the spec live in `cluster`, which every node derivation
+// needs and which this module already depends on for the principals; they are
+// named here too so the lifecycle reads them from the validator, as the other
+// delegating packages do.
+export const computeProviders = cluster.computeProviders;
+export const defaultComputeProvider = cluster.defaultComputeProvider;
+export const spec = cluster.spec;
+
+// Every key desired state must carry whichever provider is selected. The
+// provider-scoped keys come from `computeProviders`.
 //
 // `vultr-ssh-keys` is deliberately absent: per the SSH Keypair Standard its
 // *absence* selects keygen mode, and requiring it would make a conforming
@@ -31,8 +40,6 @@ export const required = [
   "automq-data-r2-bucket", "automq-ops-r2-bucket",
   "automq-r2-endpoint", "automq-r2-region",
   "automq-wal-batch-interval-ms", "automq-wal-max-bytes-in-batch",
-  "vultr-region", "vultr-plan", "vultr-os-id", "vultr-vpc-subnet",
-  "vultr-ssh-sources", "vultr-kafka-sources",
   "r2-bucket", "r2-endpoint",
 ];
 
@@ -42,7 +49,6 @@ const imageRe = /^[^\s:@]+(?:\/[^\s:@]+)*(?::[^\s:@]+)?(?:@sha256:[0-9a-f]{64})?
 const digestRe = /@sha256:[0-9a-f]{64}$/;
 const bucketRe = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const endpointRe = /^https:\/\/[a-z0-9.-]+(?::\d+)?\/?$/;
-const cidrRe = /^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 const prefixRe = /^[a-z][a-z0-9-]{0,15}$/;
 // kafka-storage.sh random-uuid: a UUID in unpadded URL-safe base64.
 const clusterIdRe = /^[A-Za-z0-9_-]{22}$/;
@@ -73,23 +79,15 @@ function port(value: unknown): boolean {
   return isInteger(value) && value >= 1 && value <= 65535;
 }
 
-function sourceListErrors(opts: Opts, key: string): string[] {
-  const value = opts[key];
-  if (missing(value)) return [];
-  if (!Array.isArray(value)) return [`:${key} must be a YAML list of CIDR sources`];
-  if (value.length === 0) return [`:${key} must list at least one source, or be removed`];
-  return value.flatMap((source, i) =>
-    typeof source !== "string" || !String(source).includes("/")
-      ? [`:${key}[${i}] must be a CIDR block such as 0.0.0.0/0`]
-      : []);
-}
-
+// Every problem with desired state at once: the missing keys (this package's
+// and the selected provider's), the package's own checks, then the Compute
+// Cluster Standard's — selection, the source lists, the provider rules, the
+// created network's CIDR and the topology — which are ONCE's over `spec`.
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
-  for (const key of required) {
+  for (const key of [...required, ...compute.requiredKeys(spec, opts)]) {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
-  if (opts["provider-compute"] !== "vultr") errors.push(":provider-compute must be vultr");
   if (opts["provider-dns"] !== "cloudflare") errors.push(":provider-dns must be cloudflare");
   if (!["local", "s3", "r2"].includes(String(opts["provider-backend"]))) {
     errors.push(":provider-backend must be local, s3, or r2");
@@ -213,18 +211,10 @@ export function stateErrors(opts: Opts): string[] {
     errors.push(":automq-wal-max-bytes-in-batch must be a positive integer");
   }
 
-  // --- compute
-  if (!(missing(opts["vultr-os-id"]) || isInteger(opts["vultr-os-id"]))) {
-    errors.push(":vultr-os-id must be Vultr's numeric operating-system id");
-  }
-  if (!missing(opts["vultr-vpc-subnet"]) && !cidrRe.test(String(opts["vultr-vpc-subnet"]))) {
-    errors.push(":vultr-vpc-subnet must be a CIDR block such as 10.40.0.0/24");
-  }
-  errors.push(...sourceListErrors(opts, "vultr-ssh-sources"));
-  errors.push(...sourceListErrors(opts, "vultr-kafka-sources"));
-  if (!missing(opts["vultr-name"]) && !principalRe.test(String(opts["vultr-name"]))) {
-    errors.push(":vultr-name must be a safe 1-64 character name");
-  }
+  // --- compute: the Compute Cluster Standard's checks are ONCE's over the
+  // spec — selection, the source lists, the Vultr os id and name rules, the
+  // canonical VPC CIDR, and the node count as a positive integer.
+  errors.push(...computeCluster.stateErrors(spec, opts));
   return errors;
 }
 
@@ -232,8 +222,9 @@ export function backendSecrets(opts: Opts): string[] {
   return providers["provider-backend"]?.[String(opts["provider-backend"])]?.secrets ?? [];
 }
 
-// What talking to the providers needs, on any real event.
-export const providerSecrets = ["vultr-api-key", "cloudflare-api-token"];
+// What talking to Cloudflare needs, on any real event. The compute provider's
+// credential comes from the registry.
+export const dnsSecrets = ["cloudflare-api-token"];
 
 // What converging the cluster needs, and therefore only a create. Every SASL
 // password, the keystore password, and the SCRAM salts are generated on the
@@ -242,12 +233,15 @@ export const applicationSecrets = [
   "automq-r2-access-key-id", "automq-r2-secret-access-key",
 ];
 
-// Credentials a real event needs. A delete tears down infrastructure and never
-// converges anything, so it asks for the provider credentials only; demanding
-// the storage keys to destroy machines would be a lock on the exit.
+// Credentials a real event needs: the selected compute provider's,
+// Cloudflare's, the backend's, and on a create the storage keys. A delete tears
+// down infrastructure and never converges anything, so it asks for the provider
+// credentials only; demanding the storage keys to destroy machines would be a
+// lock on the exit.
 export function secretErrors(opts: Opts, event: string): string[] {
   const keys = [...new Set([
-    ...providerSecrets,
+    ...compute.secrets(spec, opts),
+    ...dnsSecrets,
     ...(event === "create" ? applicationSecrets : []),
     ...backendSecrets(opts),
   ])];
@@ -258,7 +252,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
 export function tofuEnv(opts: Opts, slot: string): Record<string, string> {
   switch (slot) {
     case "provider-compute":
-      return { "vultr-api-key": "VULTR_API_KEY" };
+      return compute.tofuEnv(spec, opts);
     case "provider-dns":
       return { "cloudflare-api-token": "CLOUDFLARE_API_TOKEN" };
     case "provider-backend":

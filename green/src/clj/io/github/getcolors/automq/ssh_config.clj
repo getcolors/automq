@@ -10,10 +10,12 @@
   Unlike the keypair, this play is the package's own copy rather than ONCE's
   (standard §7). The file is shared with every other host the operator reaches,
   so an unrelated change upstream must not be able to rewrite it at pin-bump
-  time."
+  time. The alias list, though, is the Compute Cluster Standard's (§6) and
+  comes from ONCE."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [io.github.getcolors.automq.cluster :as cluster]))
+            [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.once.compute-cluster :as once-cluster]))
 
 (defn host-alias
   "The profile, unchanged. Standard §2: the profile already keys remote state,
@@ -28,22 +30,18 @@
   [opts]
   (str "~/.ssh/" (host-alias opts)))
 
-(defn node-alias
-  "The alias for node `i`: `<profile>-<i>`, matching the machine label."
-  [opts i]
-  (str (host-alias opts) "-" i))
-
 (defn aliases
   "Every alias this deployment owns: the bare profile, which reaches node 0 and
-  is what the standard promises an operator can type, plus one per node.
+  is what the standard promises an operator can type, plus `<profile>-<i>` per
+  node, matching the machine label. ONCE derives the list from the spec
+  (Compute Cluster Standard §6).
 
   A single-node package needs only the first. Here the per-node aliases are
   what make the cluster operable at all — half of running a three-node quorum
   is reaching one specific member — and the bare profile keeps `ssh <profile>`
   meaning what it means in every other deployment."
   [opts]
-  (into [(host-alias opts)]
-        (map #(node-alias opts %) (cluster/indexes opts))))
+  (once-cluster/aliases cluster/spec opts))
 
 (defn config-path []
   (io/file (System/getProperty "user.home") ".ssh" "config"))

@@ -3,6 +3,7 @@
             [clojure.string]
             [clojure.test :refer [deftest is testing]]
             [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.automq.cluster-test :refer [params]]
             [io.github.getcolors.automq.tools :as tools]))
 
 (def opts
@@ -12,28 +13,48 @@
    :automq-host "automq.example.com" :automq-broker-name-prefix "b"
    :automq-kafka-port 9092 :automq-internal-port 9094 :automq-controller-port 9093
    :automq-sasl-user "automq" :automq-client-topic-prefix "colors-"
+   :vultr-vpc-subnet "10.40.0.0/24"
    :vultr-ssh-sources ["0.0.0.0/0" "::/0"]
    :vultr-kafka-sources ["203.0.113.0/24"]})
 
-(def params
-  [{:index 0 :ip "203.0.113.10" :vpc-ip "10.40.0.3" :user "root"}
-   {:index 1 :ip "203.0.113.11" :vpc-ip "10.40.0.4" :user "root"}
-   {:index 2 :ip "203.0.113.12" :vpc-ip "10.40.0.5" :user "root"}])
+(def applied (assoc opts :once/cluster params))
 
-(deftest node-keys-are-hyphenated-but-ssh-key-id-is-not
-  ;; Two conventions meet at this boundary and only one of them may win per
-  ;; key. Node entries become kebab-case, because that is what the Clojure
-  ;; reads. `ssh_key_id` stays verbatim, because it is the SSH Keypair
-  ;; Standard's contract with ONCE's create preflight — hyphenating it makes
-  ;; the preflight report a key this deployment created as foreign.
-  (let [raw {"ssh_key_id" "7692e92a"
-             "nodes" [{"index" 0 "ip" "203.0.113.10" "vpc_ip" "10.40.0.4" "user" "root"}]}
-        params (tools/normalize-params raw)
-        [n] (:nodes params)]
-    (is (= "7692e92a" (:ssh_key_id params)))
-    (is (nil? (:ssh-key-id params)))
-    (is (= "10.40.0.4" (:vpc-ip n)))
-    (is (nil? (:vpc_ip n)))))
+(deftest the-adopted-cluster-reaches-the-renderers-respelled
+  ;; ONCE records `vpc_ip` and `ssh_key_id` with underscores — the latter is
+  ;; the SSH Keypair Standard's contract with ONCE's create preflight and must
+  ;; stay verbatim on the params map. The renderers read `:vpc-ip`, so the
+  ;; node wrapper respells that one key and nothing else.
+  (let [[n] (tools/nodes applied)]
+    (is (= "7692e92a" (:ssh_key_id (:once/cluster applied))))
+    (is (= "10.40.0.3" (:vpc-ip n)))
+    (is (nil? (:vpc_ip n)))
+    (is (= "automq-vultr-0" (:name n)))))
+
+(deftest the-compute-stage-refuses-anything-but-the-whole-cluster
+  ;; The real create's infrastructure step hands its tofu outputs here. No
+  ;; `params` output at all, or a node set that is partial or incomplete, is
+  ;; exit 1 with ONCE's message rather than a quorum string against
+  ;; 192.0.2.10; the whole cluster lands under `:once/cluster`.
+  (let [result (fn [p] {:green/exit 0 :tofu/outputs (when p {:params p})})]
+    (testing "no params output"
+      (let [r (tools/resolved-cluster opts (result nil))]
+        (is (= 1 (:green/exit r)))
+        (is (= "compute produced no params output; refusing to converge against the documentation addresses"
+               (:green/err r)))))
+    (testing "a partial cluster"
+      (let [r (tools/resolved-cluster opts (result (update params :nodes pop)))]
+        (is (= 1 (:green/exit r)))
+        (is (= "the compute stage did not report nodes this package declares: 2" (:green/err r)))))
+    (testing "an incomplete node"
+      (let [r (tools/resolved-cluster opts (result (assoc-in params [:nodes 2 :ip] nil)))]
+        (is (= 1 (:green/exit r)))
+        (is (clojure.string/includes? (:green/err r) "did not report a complete node"))))
+    (testing "the whole cluster, string-keyed as tofu delivers it"
+      (let [raw {"provider" "vultr" "ssh_key_id" "7692e92a"
+                 "nodes" (mapv #(into {} (map (fn [[k v]] [(name k) v])) %) (:nodes params))}
+            r (tools/resolved-cluster opts (result raw))]
+        (is (= 0 (:green/exit r)))
+        (is (= params (:once/cluster r)))))))
 
 (deftest the-zone-is-the-registrable-domain
   (is (= "example.com" (tools/zone opts))))
@@ -68,7 +89,9 @@
     (is (= "automq-vultr" (:name (first hosts))))
     (is (= "203.0.113.10" (:ip (first hosts))))
     (is (= ["automq-vultr" "automq-vultr-0" "automq-vultr-1" "automq-vultr-2"]
-           (mapv :name hosts)))))
+           (mapv :name hosts)))
+    (is (= ["203.0.113.10" "203.0.113.10" "203.0.113.11" "203.0.113.12"]
+           (mapv :ip hosts)))))
 
 (deftest the-ansible-data-carries-no-credential
   ;; Secrets reach the host as lookup('env', …) expressions written literally
@@ -80,7 +103,7 @@
                          (re-find #"(?i)secret|password|token|access.key" (name k))))
                   data))
     (is (= "0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093"
-           (:quorum-voters (tools/ansible-data (assoc opts :automq/params {:nodes params})))))))
+           (:quorum-voters (tools/ansible-data applied))))))
 
 (deftest the-compute-stage-renders-every-value-its-template-names
   ;; A Selmer key that is absent renders as empty rather than failing, so the

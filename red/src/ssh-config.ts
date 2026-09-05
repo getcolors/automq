@@ -9,13 +9,15 @@
 // Unlike the keypair, this play is the package's own copy rather than ONCE's
 // (standard §7). The file is shared with every other host the operator reaches,
 // so an unrelated change upstream must not be able to rewrite it at pin-bump
-// time.
+// time. The alias list, though, is the Compute Cluster Standard's (§6) and
+// comes from ONCE.
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Opts } from "red/workflow";
-import { indexes } from "./cluster.ts";
+import { computeCluster } from "package-once-red";
+import { spec } from "./cluster.ts";
 
 // The profile, unchanged. Standard §2: the profile already keys remote state,
 // which is what makes it unique enough to name a host by.
@@ -30,20 +32,17 @@ export function identityFile(opts: Opts): string {
   return `~/.ssh/${hostAlias(opts)}`;
 }
 
-// The alias for node `i`: `<profile>-<i>`, matching the machine label.
-export function nodeAlias(opts: Opts, i: number): string {
-  return `${hostAlias(opts)}-${i}`;
-}
-
 // Every alias this deployment owns: the bare profile, which reaches node 0 and
-// is what the standard promises an operator can type, plus one per node.
+// is what the standard promises an operator can type, plus `<profile>-<i>` per
+// node, matching the machine label. ONCE derives the list from the spec
+// (Compute Cluster Standard §6).
 //
 // A single-node package needs only the first. Here the per-node aliases are
 // what make the cluster operable at all — half of running a three-node quorum
 // is reaching one specific member — and the bare profile keeps `ssh <profile>`
 // meaning what it means in every other deployment.
 export function aliases(opts: Opts): string[] {
-  return [hostAlias(opts), ...indexes(opts).map((i) => nodeAlias(opts, i))];
+  return computeCluster.aliases(spec, opts);
 }
 
 export function configPath(): string {

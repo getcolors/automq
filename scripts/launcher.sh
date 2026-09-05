@@ -53,7 +53,7 @@ cp "$green" "$tmp/project/green"; chmod +x "$tmp/project/green"
 cp "$root/test/fixtures/colors.yml" "$tmp/project/colors.yml"
 (cd "$tmp/project" && AUTOMQ_LIB_ROOT="$root" ./green build >/dev/null) || fail 'AUTOMQ_LIB_ROOT green build failed'
 [ -f "$tmp/project/.colors/automq-fixture/automq-infrastructure/main.tf" ] || fail 'copied green payload rendered nothing'
-grep -q 'vultr_vpc2' "$tmp/project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'rendered compute has no VPC'
+grep -q 'resource "vultr_vpc" "cluster"' "$tmp/project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'rendered compute has no VPC'
 ok 'green working-tree override renders from a copied payload'
 mkdir -p "$tmp/project/deep/path"
 (cd "$tmp/project/deep/path" && AUTOMQ_LIB_ROOT="$root" ../../green build >/dev/null) || fail 'green upward desired-state search failed'
@@ -77,7 +77,7 @@ mkdir "$tmp/red-project"
 cp "$red" "$tmp/red-project/red"; chmod +x "$tmp/red-project/red"
 cp "$root/test/fixtures/colors.yml" "$tmp/red-project/colors.yml"
 (cd "$tmp/red-project" && AUTOMQ_LIB_ROOT="$root/red" ./red build >/dev/null) || fail 'AUTOMQ_LIB_ROOT red build failed'
-grep -q 'vultr_vpc2' "$tmp/red-project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'red rendered compute has no VPC'
+grep -q 'resource "vultr_vpc" "cluster"' "$tmp/red-project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'red rendered compute has no VPC'
 ok 'red working-tree override renders from a copied payload'
 mkdir -p "$tmp/red-project/deep/path"
 (cd "$tmp/red-project/deep/path" && AUTOMQ_LIB_ROOT="$root/red" ../../red build >/dev/null) || fail 'red upward desired-state search failed'
@@ -103,7 +103,7 @@ mkdir "$tmp/blue-project"
 cp "$blue" "$tmp/blue-project/blue"; chmod +x "$tmp/blue-project/blue"
 cp "$root/test/fixtures/colors.yml" "$tmp/blue-project/colors.yml"
 (cd "$tmp/blue-project" && AUTOMQ_LIB_ROOT="$root" ./blue build >/dev/null) || fail 'AUTOMQ_LIB_ROOT blue build failed'
-grep -q 'vultr_vpc2' "$tmp/blue-project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'blue rendered compute has no VPC'
+grep -q 'resource "vultr_vpc" "cluster"' "$tmp/blue-project/.colors/automq-fixture/automq-infrastructure/main.tf" || fail 'blue rendered compute has no VPC'
 ok 'blue working-tree override renders from a copied payload'
 mkdir -p "$tmp/blue-project/deep/path"
 (cd "$tmp/blue-project/deep/path" && AUTOMQ_LIB_ROOT="$root" ../../blue build >/dev/null) || fail 'blue upward desired-state search failed'
