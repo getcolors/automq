@@ -14,7 +14,7 @@
         ;; bc06f2f moved the machine keypair into the operator's ~/.ssh. The
         ;; ONCE pin cannot go below any of them.
         io.github.getcolors/once  {:git/url "https://github.com/getcolors/once.git"
-                                   :git/sha "b1628b7f8546c10fa9b768565bfd839512cb49ca"
+                                   :git/sha "10e525ae7c37130ab4d532b91c8d2ead94557cc8"
                                    :deps/root "green"}}
  :aliases {:dev {:extra-paths ["test/clj" "test/resources"]}
            :test {:extra-paths ["test/clj" "test/resources"]

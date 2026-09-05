@@ -1,11 +1,20 @@
-# The `~/.ssh/config` block, per the workspace SSH Config Standard.
+# The `~/.ssh/config` block, per the workspace SSH Config Standard and §6 of
+# the Compute Cluster Standard.
 #
-# One managed block carries every alias this deployment owns: the bare profile,
-# which reaches node 0 and is what the standard promises an operator can type,
-# and one alias per node, because half of operating a quorum is reaching one
-# specific member of it. The addresses arrive as extra-vars — they are run-time
-# facts, and keeping them out of the rendered playbook is what makes the
-# committed goldens identical on every workstation (§6).
+# One managed block, marked with the profile, carries every alias this
+# deployment owns: the bare profile, which reaches the entry node and is what
+# the standard promises an operator can type, and one alias per node, because
+# operating a cluster means reaching one specific member of it. The aliases
+# and addresses arrive as extra-vars — they are run-time facts, and keeping
+# them out of the rendered playbook is what makes the committed goldens
+# identical on every workstation (§6). The one Selmer conditional is the
+# IdentityFile pair, because whether the package owns a key is desired state
+# that a build does know. `block_state` is `present` on create and `absent`
+# on delete; the same playbook file serves both events.
+#
+# This play is one copy shared by every multi-node package, gated by
+# workspace/scripts/package-copies.py: a change here is a change to all of
+# them, and a copy that drifts in one package fails that script.
 - name: Manage the deployment's ssh config block
   hosts: local
   gather_facts: false
@@ -23,6 +32,13 @@
         create: true
         mode: "0600"
         marker: "# {mark} {{ host_alias }} ANSIBLE MANAGED BLOCK"
+        # ssh_config takes the first value it obtains, and blockinfile
+        # appends. A Host * stanza above this block would win on User and
+        # IdentityFile, so the block goes first (§5). BOF rather than a regex
+        # on purpose: blockinfile's insertbefore anchors on the *last* match,
+        # and it has no firstmatch. Options standing above the first Host
+        # line would be captured into this stanza by a BOF insert, so the
+        # package refuses to run against such a file rather than rewrite it.
         insertbefore: BOF
         state: "{{ block_state }}"
         block: |
@@ -30,7 +46,9 @@
           Host {{ host.name }}
               HostName {{ host.ip }}
               User root
+              Port 22
 <% if ssh-keygen %>              IdentityFile <{ ssh-config-identity-file }>
               IdentitiesOnly yes
 <% endif %>              StrictHostKeyChecking accept-new
+              ForwardAgent no
           {% endfor %}
