@@ -36,7 +36,7 @@ import { homedir } from "node:os";
 // directory, which would halt Bun's upward resolution of `package-automq-red`
 // and break the development symlink at red/red.
 const PINS = {
-  "package-automq-red": "github:getcolors/automq#f0ba9d13e926d58fcc77b99130de62866b4b32a1",
+  "package-automq-red": "github:getcolors/automq#48778a5b685401fe830f30a1d404b944e4da87c7",
   "package-once-red": "github:getcolors/once#759eb0311b4bdf881eab813cfe5d00f76b9310cc",
   "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
 };
