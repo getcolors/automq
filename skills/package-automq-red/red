@@ -35,11 +35,11 @@ import { homedir } from "node:os";
 // itself (see below). They stay out of a bundled package.json in this
 // directory, which would halt Bun's upward resolution of `package-automq-red`
 // and break the development symlink at red/red.
+// Compute and SDK revisions resolve through the immutable package dependency.
+// Repeating Git dependencies at both levels breaks cold installs in Bun 1.3.13.
 const PINS = {
-  "colors-compute-red": "github:getcolors/colors-compute#85bf076dfe2c34025dc9362f1cc4c5bc92a4373d",
   "package-automq-red": "github:getcolors/automq#c87320f67017d1ac48b892d5c1939162e85ccab9",
   "package-once-red": "github:getcolors/once#10e525ae7c37130ab4d532b91c8d2ead94557cc8",
-  "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
 };
 
 // PINS is the only source of versions, as green's inline SHA and blue's PEP
