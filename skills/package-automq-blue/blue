@@ -5,7 +5,7 @@
 #
 # [tool.uv.sources]
 # colors-compute-blue = { git = "https://github.com/getcolors/colors-compute.git", rev = "5040d93672b9f10e7861f527ea552177369c6851", subdirectory = "blue" }
-# package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "69a9a712d66199500856db26f25d4edfd3e630bd", subdirectory = "blue" }
+# package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "a85f8233e1a054abd1122172e2d3097c5c089697", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 #
 # [tool.uv]
