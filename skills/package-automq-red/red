@@ -38,7 +38,7 @@ import { homedir } from "node:os";
 // Compute and SDK revisions resolve through the immutable package dependency.
 // Repeating Git dependencies at both levels breaks cold installs in Bun 1.3.13.
 const PINS = {
-  "package-automq-red": "github:getcolors/automq#c87320f67017d1ac48b892d5c1939162e85ccab9",
+  "package-automq-red": "github:getcolors/automq#69a9a712d66199500856db26f25d4edfd3e630bd",
   "package-once-red": "github:getcolors/once#10e525ae7c37130ab4d532b91c8d2ead94557cc8",
 };
 
