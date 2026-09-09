@@ -118,7 +118,7 @@ Each colour owns a copy of the template tree — `green/src/resources/…/tools`
 `red/resources/tools`, `blue/src/package_automq_blue/resources/tools` — because
 copies are the mechanism: a colour must render without resolving another
 colour's package. `scripts/parity.sh` diffs those three trees and the rendered
-output of both fixtures; a change to a template or a derivation lands in all
+output of both fixtures, including public IPv4 and IPv6 SSH/Kafka rules; a change to a template or a derivation lands in all
 three in the same commit, and passes parity here or it is not done.
 
 Two things the ports could not copy verbatim:

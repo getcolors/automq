@@ -45,8 +45,10 @@ vultr-os-id: 2284
 vultr-vpc-subnet: 10.40.0.0/24
 vultr-ssh-sources:
   - 0.0.0.0/0
+  - "::/0"
 vultr-kafka-sources:
   - 0.0.0.0/0
+  - "::/0"
 
 r2-bucket: fixture-state
 r2-endpoint: https://fixture.r2.cloudflarestorage.com

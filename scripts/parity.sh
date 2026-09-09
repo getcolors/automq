@@ -29,6 +29,7 @@ build_variant() {
   (cd "$root/green" && AUTOMQ_LIB_ROOT="$root" ./green build -f "$tmp/$variant-green.yml" >/dev/null)
   (cd "$root/red" && AUTOMQ_LIB_ROOT="$root/red" ./red build -f "$tmp/$variant-red.yml" >/dev/null)
   (cd "$root/blue" && uv run python -m package_automq_blue build -f "$tmp/$variant-blue.yml" >/dev/null)
+  for colour in green red blue; do python3 "$root/scripts/check-ipv6-policy.py" "$tmp/$variant/$colour"; done
   diff -r --exclude=__pycache__ "$tmp/$variant/green" "$tmp/$variant/red"
   diff -r --exclude=__pycache__ "$tmp/$variant/green" "$tmp/$variant/blue"
 }

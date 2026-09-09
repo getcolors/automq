@@ -22,11 +22,25 @@
         "subnet": "0.0.0.0",
         "subnet_size": 0
       },
+      "kafka:::/0": {
+        "ip_type": "v6",
+        "port": "9092",
+        "protocol": "tcp",
+        "subnet": "::",
+        "subnet_size": 0
+      },
       "ssh:0.0.0.0/0": {
         "ip_type": "v4",
         "port": "22",
         "protocol": "tcp",
         "subnet": "0.0.0.0",
+        "subnet_size": 0
+      },
+      "ssh:::/0": {
+        "ip_type": "v6",
+        "port": "22",
+        "protocol": "tcp",
+        "subnet": "::",
         "subnet_size": 0
       }
     }

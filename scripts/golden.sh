@@ -33,6 +33,8 @@ for variant in colors optout; do
   actual="$tmp/work/$profile"
   golden="$root/test/resources/golden/local/$profile"
 
+  python3 "$root/scripts/check-ipv6-policy.py" "$actual"
+
   # No rendered artefact may carry a real secret into a committed golden.
   # Checked before --accept copies anything. POSIX grep on purpose: a missing
   # binary inside `if` is simply false, so the guard must not depend on one
