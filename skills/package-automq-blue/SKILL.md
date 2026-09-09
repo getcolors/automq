@@ -1,6 +1,6 @@
 ---
 name: package-automq-blue
-description: Provision a three-node AutoMQ cluster on Vultr — Kafka-compatible brokers whose storage tier is S3 object storage, behind a public SASL_SSL endpoint with SCRAM authentication and ACL authorization.
+description: Provision a three-node AutoMQ cluster with Kafka-compatible brokers whose storage tier is S3 object storage, behind a public SASL_SSL endpoint with SCRAM authentication and ACL authorization.
 license: MIT
 ---
 
@@ -11,18 +11,17 @@ state or running a lifecycle command.
 
 ## What this provisions
 
-Three Vultr instances, each running AutoMQ with both KRaft roles
-(`broker,controller`). A Vultr VPC carries the controller quorum and
-inter-broker traffic; the firewall opens 22 and 9092 only. Cloudflare holds one
+Three machines, each running AutoMQ with both KRaft roles
+(`broker,controller`). The pinned colors-compute library provisions their private
+network and firewall. SSH uses port 22, clients use 9092, and the private
+controller and inter-broker listeners use 9093 and 9094. Cloudflare holds one
 A record per node on the bootstrap name and one per broker, all DNS-only. One
 Let's Encrypt certificate, issued over DNS-01 by node 0 and distributed to the
 others through object storage, covers the bootstrap name and every broker name.
 
-**Durability comes from object storage, not from replicas.** Every topic is
-replication factor 1, which is upstream's own default and is not a
-misconfiguration: bytes are in R2 before a produce is acknowledged. The three
-nodes buy a controller quorum, partition failover, and throughput — not copies.
-Read that sentence again before "fixing" the replication factor.
+AutoMQ stores durable records in R2 before acknowledging a produce. Keep
+replication factor 1, the upstream default. The nodes provide the controller
+quorum, partition failover, and throughput.
 
 ## Safety
 
@@ -40,8 +39,8 @@ Read that sentence again before "fixing" the replication factor.
 ## Commands
 
 ```sh
-./blue validate     # desired state, tools, and Vultr access
-./blue build        # render .colors/ only — contacts nothing
+./blue validate     # desired state, tools, and credentials
+./blue build        # render .colors/ only; contacts nothing
 ./blue create --dry-run
 ./blue create
 ./blue delete       # guarded; stops the cluster, destroys DNS and compute

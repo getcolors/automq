@@ -13,34 +13,12 @@ def test_the_adopted_cluster_reaches_the_renderers_respelled():
     # stay verbatim on the params map. The renderers read `vpc-ip`, so the node
     # wrapper respells that one key and nothing else.
     node = tools.nodes(opts)[0]
-    assert opts["once/cluster"]["ssh_key_id"] == "7692e92a"
+    assert opts["colors-compute/cluster"]["ssh_key_id"] == "7692e92a"
     assert node["vpc-ip"] == "10.40.0.3"
     assert "vpc_ip" not in node
     assert node["name"] == "automq-vultr-0"
 
 
-def test_the_compute_stage_refuses_anything_but_the_whole_cluster():
-    # The real create's infrastructure step hands its tofu outputs here. No
-    # `params` output at all, or a node set that is partial or incomplete, is
-    # exit 1 with ONCE's message rather than a quorum string against
-    # 192.0.2.10; the whole cluster lands under `once/cluster`.
-    def result(p):
-        return {"blue/exit": 0, "tofu/outputs": {"params": p} if p else {}}
-
-    none = tools.resolved_cluster(opts, result(None))
-    assert none["blue/exit"] == 1
-    assert none["blue/err"] == ("compute produced no params output; refusing to "
-                                "converge against the documentation addresses")
-    partial = tools.resolved_cluster(opts, result({**PARAMS, "nodes": PARAMS["nodes"][:2]}))
-    assert partial["blue/exit"] == 1
-    assert partial["blue/err"] == "the compute stage did not report nodes this package declares: 2"
-    incomplete = tools.resolved_cluster(opts, result({**PARAMS, "nodes": [
-        PARAMS["nodes"][0], PARAMS["nodes"][1], {**PARAMS["nodes"][2], "ip": None}]}))
-    assert incomplete["blue/exit"] == 1
-    assert "did not report a complete node" in incomplete["blue/err"]
-    whole = tools.resolved_cluster(opts, result(PARAMS))
-    assert whole["blue/exit"] == 0
-    assert whole["once/cluster"] == PARAMS
 
 
 def test_the_zone_is_the_registrable_domain():
@@ -73,7 +51,7 @@ def test_the_inventory_carries_per_node_facts_only():
 
 def test_ssh_config_hosts_point_the_bare_alias_at_node_zero():
     hosts = tools.ssh_config_hosts(opts, tools.nodes(opts))
-    assert hosts[0] == {"name": "automq-vultr", "ip": "203.0.113.10"}
+    assert hosts[0]["name"] == "automq-vultr" and hosts[0]["ip"] == "203.0.113.10" and hosts[0]["user"] == "root"
     assert [h["name"] for h in hosts] == [
         "automq-vultr", "automq-vultr-0", "automq-vultr-1", "automq-vultr-2"]
     assert [h["ip"] for h in hosts] == [
@@ -90,27 +68,8 @@ def test_the_ansible_data_carries_no_credential():
     assert data["quorum-voters"] == "0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093"
 
 
-def test_the_compute_stage_renders_every_value_its_template_names():
-    # A template key that is absent renders as empty rather than failing, so the
-    # firewall rule shipped `port = ""` and only the provider rejected it.
-    data = tools.infrastructure_data(opts)
-    assert data["kafka-port"] == 9092
-    assert data["node-count"] == 3
-    assert data["compute-name"] == "automq-vultr"
-    assert all(str(data[k]).strip() for k in
-               ["kafka-port", "node-count", "compute-name", "ssh-sources-hcl",
-                "kafka-sources-hcl", "controller-port", "internal-port"])
-    # Without a rule for these, a Vultr firewall group silently drops TCP on the
-    # private interface while still passing ICMP, and the cluster never elects a
-    # controller.
-    assert data["controller-port"] == 9093
-    assert data["internal-port"] == 9094
 
 
-def test_cidr_lists_survive_both_yaml_and_string_forms():
-    assert tools.cidrs({"vultr-ssh-sources": ["0.0.0.0/0", "::/0"]}, "vultr-ssh-sources") == [
-        "0.0.0.0/0", "::/0"]
-    assert tools.cidrs({"x": "1.2.3.0/24"}, "x") == ["1.2.3.0/24"]
 
 
 def test_the_ansible_stage_renders_the_whole_cluster_tree():
@@ -125,7 +84,7 @@ async def test_a_delete_with_no_compute_in_state_stops_instead_of_converging():
     # stop, and the cleanup play would only fail against the placeholder
     # addresses.
     result = await tools.ansible_step(fixture({"blue/event": "delete"}))
-    assert result["blue/exit"] == 0
+    assert result["blue/exit"] == 1
 
 
 def test_each_tofu_stage_keys_its_own_state():

@@ -29,14 +29,14 @@ build_variant() {
   (cd "$root/green" && AUTOMQ_LIB_ROOT="$root" ./green build -f "$tmp/$variant-green.yml" >/dev/null)
   (cd "$root/red" && AUTOMQ_LIB_ROOT="$root/red" ./red build -f "$tmp/$variant-red.yml" >/dev/null)
   (cd "$root/blue" && uv run python -m package_automq_blue build -f "$tmp/$variant-blue.yml" >/dev/null)
-  diff -r "$tmp/$variant/green" "$tmp/$variant/red"
-  diff -r "$tmp/$variant/green" "$tmp/$variant/blue"
+  diff -r --exclude=__pycache__ "$tmp/$variant/green" "$tmp/$variant/red"
+  diff -r --exclude=__pycache__ "$tmp/$variant/green" "$tmp/$variant/blue"
 }
 
 build_variant colors
 build_variant optout
 
-diff -r "$root/green/src/resources/io/github/getcolors/automq" "$root/red/resources"
-diff -r "$root/green/src/resources/io/github/getcolors/automq" "$root/blue/src/package_automq_blue/resources"
+diff -r --exclude=__pycache__ "$root/green/src/resources/io/github/getcolors/automq" "$root/red/resources"
+diff -r --exclude=__pycache__ "$root/green/src/resources/io/github/getcolors/automq" "$root/blue/src/package_automq_blue/resources"
 
 echo "green, red, and blue AutoMQ artifacts are byte-identical"

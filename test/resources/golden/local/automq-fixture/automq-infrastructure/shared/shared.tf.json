@@ -1,0 +1,88 @@
+{
+  "locals": {
+    "ingress": {
+      "controller:private": {
+        "ip_type": "v4",
+        "port": "9093",
+        "protocol": "tcp",
+        "subnet": "10.40.0.0",
+        "subnet_size": 24
+      },
+      "internal:private": {
+        "ip_type": "v4",
+        "port": "9094",
+        "protocol": "tcp",
+        "subnet": "10.40.0.0",
+        "subnet_size": 24
+      },
+      "kafka:0.0.0.0/0": {
+        "ip_type": "v4",
+        "port": "9092",
+        "protocol": "tcp",
+        "subnet": "0.0.0.0",
+        "subnet_size": 0
+      },
+      "ssh:0.0.0.0/0": {
+        "ip_type": "v4",
+        "port": "22",
+        "protocol": "tcp",
+        "subnet": "0.0.0.0",
+        "subnet_size": 0
+      }
+    }
+  },
+  "output": {
+    "params": {
+      "value": {
+        "firewall_group_id": "${vultr_firewall_group.network.id}",
+        "network_cidr": "${vultr_vpc.network.v4_subnet}/${vultr_vpc.network.v4_subnet_mask}",
+        "provider": "vultr",
+        "vpc_id": "${vultr_vpc.network.id}",
+        "vpc_ip_range": "10.40.0.0/24"
+      }
+    }
+  },
+  "provider": {
+    "vultr": {}
+  },
+  "resource": {
+    "vultr_firewall_group": {
+      "network": {
+        "description": "automq-fixture-firewall",
+        "lifecycle": {
+          "prevent_destroy": true
+        }
+      }
+    },
+    "vultr_firewall_rule": {
+      "ingress": {
+        "firewall_group_id": "${vultr_firewall_group.network.id}",
+        "for_each": "${local.ingress}",
+        "ip_type": "${each.value.ip_type}",
+        "port": "${each.value.port}",
+        "protocol": "${each.value.protocol}",
+        "subnet": "${each.value.subnet}",
+        "subnet_size": "${each.value.subnet_size}"
+      }
+    },
+    "vultr_vpc": {
+      "network": {
+        "description": "automq-fixture",
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "region": "ams",
+        "v4_subnet": "10.40.0.0",
+        "v4_subnet_mask": 24
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "vultr": {
+        "source": "vultr/vultr",
+        "version": "2.32.0"
+      }
+    }
+  }
+}

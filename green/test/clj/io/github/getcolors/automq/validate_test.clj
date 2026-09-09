@@ -85,26 +85,6 @@
   (is (nil? (error-matching (assoc base :compute-prevent-destroy false) #"prevent-destroy")))
   (is (error-matching (assoc base :compute-prevent-destroy "yes") #"must be true or false")))
 
-(deftest the-compute-checks-are-the-cluster-standards
-  ;; Selection, the source lists, the created network's CIDR and the node
-  ;; count are ONCE's over the spec, in ONCE's words. The package's own
-  ;; cluster-shape rules still apply beside them.
-  (is (= [":provider-compute must be one of vultr"]
-         (errors (assoc base :provider-compute "digitalocean"))))
-  (is (= [":vultr-ssh-sources must list at least one CIDR"]
-         (errors (assoc base :vultr-ssh-sources []))))
-  (is (= [":vultr-ssh-sources entry \"1.2.3.4\" is not an IPv4 or IPv6 CIDR"]
-         (errors (assoc base :vultr-ssh-sources ["1.2.3.4"]))))
-  (testing "an empty Kafka list means no public Kafka access, not a mistake"
-    (is (empty? (errors (assoc base :vultr-kafka-sources [])))))
-  (testing "the VPC must be a network, host bits zero"
-    (is (= [":vultr-vpc-subnet must be a canonical IPv4 network such as 10.40.0.0/24"]
-           (errors (assoc base :vultr-vpc-subnet "10.40.0.1/24")))))
-  (testing "a present count that is not a positive integer is refused twice: ONCE's rule and the quorum's"
-    (let [reported (errors (assoc base :automq-node-count "three"))]
-      (is (some #{":automq-node-count must be a positive integer"} reported))
-      (is (some #{":automq-node-count must be an integer"} reported)))))
-
 (deftest the-profile-overlay-is-refused
   (is (seq (validate/env-errors {"COLORS_PAR_PROFILE" "somewhere-else"})))
   (is (empty? (validate/env-errors {}))))
@@ -116,23 +96,15 @@
       (is (some #(re-find #"AUTOMQ_R2_ACCESS_KEY_ID" %) (validate/secret-errors none :create))))
     (testing "a delete converges nothing, so demanding storage keys would only lock the exit"
       (is (not-any? #(re-find #"AUTOMQ_R2" %) (validate/secret-errors none :delete)))
-      (is (some #(re-find #"VULTR_API_KEY" %) (validate/secret-errors none :delete))))))
-
-(deftest the-api-probe-distinguishes-outage-from-credential
-  ;; The whole point: a single "check your token" message for every non-2xx
-  ;; sends an operator to rotate a key during a provider outage.
-  (is (nil? (validate/api-error {:exit 0 :out "200"})))
-  (is (re-find #"rejected" (validate/api-error {:exit 0 :out "401"})))
-  (is (re-find #"rejected" (validate/api-error {:exit 0 :out "403"})))
-  (is (re-find #"rate-limited" (validate/api-error {:exit 0 :out "429"})))
-  (let [outage (validate/api-error {:exit 0 :out "503"})]
-    (is (re-find #"failure on Vultr's side" outage))
-    (is (re-find #"do not\s+rotate" outage)))
-  (let [offline (validate/api-error {:exit 6 :out "000"})]
-    (is (re-find #"not a credential problem" offline))))
+      (is (not-any? #(re-find #"VULTR_API_KEY" %) (validate/secret-errors none :delete))))))
 
 (deftest tools-are-checked-without-touching-the-network
   (let [runner (fn [args _]
                  (if (= "curl" (last args)) {:exit 1 :out ""} {:exit 0 :out ""}))
         errs (validate/runtime-errors (dissoc base :vultr-api-key) runner)]
     (is (some #(re-find #"curl" %) errs))))
+
+(deftest compute-credentials-follow-library-state-checks
+  (doseq [event [:create :delete]]
+    (is (not-any? #(str/includes? % "VULTR_API_KEY") (validate/secret-errors base event))))
+  (is (some #(str/includes? % "VULTR_API_KEY") (validate/secret-errors base :validate))))

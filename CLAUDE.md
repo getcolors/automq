@@ -3,12 +3,12 @@
 ## Repository
 
 `automq` is a tri-colour Package Skill for a three-node [AutoMQ](https://github.com/AutoMQ/automq)
-cluster on Vultr: Kafka 3.9.1 wire protocol, KRaft combined `broker,controller`
+cluster: Kafka 3.9.1 wire protocol, KRaft combined `broker,controller`
 roles, and Cloudflare R2 as the storage tier. `green/` (Clojure) is canonical;
 `red/` (TypeScript) and `blue/` (Python) are behavioural ports of it, and
 `scripts/parity.sh` is what makes "behavioural" checkable — one fixture, three
-colours, byte-identical trees. OpenTofu manages a VPC, a
-firewall that opens **22 and 9092 only**, and the instances; a second tofu
+colours, byte-identical trees. The colors-compute library manages the private
+network, machines, and public SSH/client plus private quorum firewall rules; a second tofu
 stack manages Cloudflare records; Ansible converges a Compose stack on each
 node. The first consumer is `../automq-vultr`.
 
@@ -139,7 +139,7 @@ Born conforming to three workspace standards. Read
 `../workspace/standards/ssh-keypair.md` before touching `ssh.clj`/`ssh.ts`/`ssh.py`,
 `../workspace/standards/ssh-config.md` before touching the `ssh_config` modules, and
 `../workspace/standards/compute-name.md` for why there is no required
-`vultr-name`. The keypair behaviour is ONCE's, reused so one standard has one
+`vultr-name`. The keypair behaviour belongs to colors-compute, reused so one standard has one
 implementation; the config block is this package's own copy (§7). The two
 disagree on ordering deliberately — the config block is removed *before* the
 compute destroy, the keypair *after* it.
@@ -147,27 +147,23 @@ compute destroy, the keypair *after* it.
 This deployment claims `<profile>` and `<profile>-<n>` for each node, and the
 adoption check covers all of them.
 
-## The cluster is ONCE's
+## Compute and cluster composition
 
-The node set is delegated to ONCE's `compute-cluster` namespace per
-`../workspace/standards/compute-cluster.md`, of which this package is the
-reference consumer. `cluster.clj` (`cluster.ts`, `cluster.py`) owns the
-`compute-providers` registry and the `spec` — one homogeneous role counted by
-`automq-node-count`, a `:created` network from `vultr-vpc-subnet`, `ssh-sources`
-non-empty and `kafka-sources` may-be-empty — and calls ONCE for the node ids,
-the fallback addresses a `build` renders with, the aliases, the ssh-config
-hosts, the compute checks and their messages, `read-state`, `resolved-cluster`
-and `adopt-state`. The adopted cluster lives at `:once/cluster`; the package's
-`nodes` wrapper respells ONCE's `:vpc_ip` as the `:vpc-ip` the renderers read
-and adds each node's broker name, so no template changed. A real delete now
-fails closed on a backend it cannot read and on a state that does not describe
-every node, where it once proceeded on nil. What stays here is AutoMQ's: broker
-names, the SAN list, the quorum string, listeners, principals, ACLs, and the
-odd-count rule. Do not copy a `compute-cluster` function into this package.
+The package delegates compute to the pinned colors-compute library in each
+color. Its cluster module supplies one homogeneous role, the node count, and
+application network requirements. The library provisions shared resources once,
+fans out the same node workflow through Colors, and joins complete node outputs
+for Ansible, DNS, and SSH configuration. The package owns broker names, quorum
+configuration, listeners, principals, ACLs, and the odd-count rule.
 
-`build` and `--dry-run` render `/home/build-placeholder/.ssh/<profile>` rather
-than reading `~/.ssh`, which is what makes the committed goldens mean the same
-thing on every workstation.
+Provider templates, credentials, SSH keys, remote state, and lifecycle ownership
+belong to the library. Do not add a package provider registry or compute API call.
+A compatible new provider requires only a library dependency bump. ONCE remains
+for DNS helpers and application DNS backend credential binding.
+
+Existing monolithic state requires explicit migration. Build and dry-run use
+placeholder addresses and `/home/build-placeholder/.ssh/<profile>` without
+reading local keys or calling a provider.
 
 ## Commands
 
@@ -191,17 +187,10 @@ must not touch `~/.ssh`.
 
 ## Coupling
 
-Every colour pins its own SDK and its own ONCE: `green/deps.edn`,
-`red/package.json`, `blue/pyproject.toml`. The ONCE pin cannot go below
-`b1628b7`, where `compute-cluster` landed (nor, further back, `bc06f2f`, where
-the machine keypair moved into the operator's `~/.ssh`), and the three colours
-are kept on the same ONCE commit — the SSH Keypair and Compute Cluster
-Standards have one implementation per colour and they must agree. The green
-SDK pin cannot go below `3f33f5d`, where a tofu launch failure became the step
-error ONCE's `read-state` relies on. Use `GREEN_LIB_ROOT`,
-`ONCE_LIB_ROOT`, and `AUTOMQ_LIB_ROOT` for working-tree development
-(`AUTOMQ_LIB_ROOT` names the repository root for every colour; red also accepts
-the `red/` dir directly).
+Every colour pins its SDK, colors-compute, and ONCE in its manifest and
+bundled launcher. Publish upstream changes before moving downstream pins.
+`COLORS_COMPUTE_LIB_ROOT` selects a library working tree for Green development;
+`AUTOMQ_LIB_ROOT` selects this package (Red also accepts its `red/` directory).
 
 `bb pin` (from `green/`) stamps all three payloads from one pushed SHA. Red and
 blue are **born unpinned** — `null` in red's `PINS`, an empty `dependencies`

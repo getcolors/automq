@@ -1,17 +1,4 @@
-"""The deployment's `~/.ssh/config` block, per the workspace SSH Config Standard.
-
-The block itself is written by the `ansible-local` stage, because that is the
-one place the address is known and because `blockinfile` already handles the
-idempotent replace. What lives here is everything that must happen before the
-stage renders: the alias, the identity file, and the refusal to adopt a stanza
-this package did not write.
-
-Unlike the keypair, this play is the package's own copy rather than ONCE's
-(standard §7). The file is shared with every other host the operator reaches,
-so an unrelated change upstream must not be able to rewrite it at pin-bump
-time. The alias list, though, is the Compute Cluster Standard's (§6) and comes
-from ONCE.
-"""
+"""AutoMQ application facts built from the shared compute contract."""
 
 from __future__ import annotations
 
@@ -19,9 +6,7 @@ import os
 import re
 from pathlib import Path
 
-from package_once_blue import compute_cluster as once_cluster
-
-from .cluster import spec
+from . import cluster
 
 
 def host_alias(opts: dict) -> str:
@@ -38,16 +23,8 @@ def identity_file(opts: dict) -> str:
 
 
 def aliases(opts: dict) -> list[str]:
-    """Every alias this deployment owns: the bare profile, which reaches node 0
-    and is what the standard promises an operator can type, plus `<profile>-<i>`
-    per node, matching the machine label. ONCE derives the list from the spec
-    (Compute Cluster Standard §6).
-
-    A single-node package needs only the first. Here the per-node aliases are
-    what make the cluster operable at all — half of running a three-node quorum
-    is reaching one specific member — and the bare profile keeps `ssh <profile>`
-    meaning what it means in every other deployment."""
-    return once_cluster.aliases(spec, opts)
+    """Use normalized library results for application rendering."""
+    return [host_alias(opts), *[host_alias(opts) + '-' + str(i) for i in cluster.indexes(opts)]]
 
 
 def config_path() -> Path:

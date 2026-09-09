@@ -1,7 +1,7 @@
 # automq
 
 A [getcolors](https://www.getcolors.ai/) Package Skill that provisions a
-three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster on Vultr: the
+three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster: the
 Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles, and
 Cloudflare R2 as the storage tier.
 
@@ -44,7 +44,7 @@ which makes them the safe way to check a `colors.yml` edit.
 
 | Layer | What |
 |---|---|
-| Compute | Three Vultr instances in one VPC; firewall opens 22 and 9092 only |
+| Compute | Three machines on a private network via colors-compute; public SSH/client and private quorum rules |
 | DNS | One A record per node on the bootstrap name, one per broker, all DNS-only |
 | TLS | One Let's Encrypt certificate over DNS-01, issued by node 0, covering the bootstrap name and every broker name |
 | Storage | Two R2 buckets — data (stream objects and the S3 WAL) and ops |
@@ -115,9 +115,16 @@ cd blue  && uv run pytest
 diff. `scripts/parity.sh` is the net the goldens cannot be: it renders both
 fixtures in all three colours and diffs the trees, and it diffs the template
 copies each colour carries. Use `AUTOMQ_LIB_ROOT` (the repository root, for
-any colour), `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` to develop across repository
+any colour), `COLORS_COMPUTE_LIB_ROOT`, `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` to develop across repository
 boundaries.
 
 ## License
 
 MIT.
+
+Compute providers, SSH keys, and R2/S3 state are supplied by the pinned
+[colors-compute library](https://github.com/getcolors/colors-compute). The package
+declares AutoMQ's private-network requirements and node count; the library fans
+out the same node workflow and joins its outputs for Ansible. Compatible provider
+additions require a library dependency bump. Existing monolithic compute state
+requires explicit migration and is refused by the new lifecycle.

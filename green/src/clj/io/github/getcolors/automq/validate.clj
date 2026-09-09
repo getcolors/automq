@@ -4,29 +4,15 @@
             [green.cli :as green-cli]
             [green.process :as process]
             [io.github.getcolors.automq.cluster :as cluster]
-            [io.github.getcolors.once.compute :as compute]
-            [io.github.getcolors.once.compute-cluster :as once-cluster]
-            [io.github.getcolors.once.ssh :as once-ssh]
+            [io.github.getcolors.compute :as compute]
+            [io.github.getcolors.compute-planning :as planning]
+            [io.github.getcolors.compute-ssh :as compute-ssh]
             [io.github.getcolors.once.validate :as once-validate]))
 
 (def profile-par (green-cli/par-name :profile))
 
-;; The registry and the spec live in `cluster`, which every node derivation
-;; needs and which this namespace already depends on for the principals; they
-;; are named here too so the lifecycle reads them from the validator, as the
-;; other delegating packages do.
-(def compute-providers
-  "The advertised compute providers and what each implies (Compute Provider
-  Standard §2, Compute Cluster Standard §2). `cluster/compute-providers`."
-  cluster/compute-providers)
-
-(def default-compute-provider
-  "What a legacy state without `params.provider` is. `cluster/default-compute-provider`."
-  cluster/default-compute-provider)
-
-(def spec
-  "How this package describes itself to ONCE's `compute-cluster`. `cluster/spec`."
-  cluster/spec)
+(def compute-providers (:compute compute/registry))
+(def default-compute-provider cluster/default-compute-provider)
 
 (def required
   "Every key desired state must carry whichever provider is selected. The
@@ -66,7 +52,7 @@
   "Whether this deployment owns its machine keypair. Delegates to ONCE, the
   standard's reference implementation, so one rule decides it everywhere."
   [opts]
-  (once-ssh/keygen? opts))
+  (= "managed" (:mode (compute-ssh/mode opts))))
 
 (defn env-errors [env]
   (when (not-empty (str (get env profile-par)))
@@ -82,13 +68,13 @@
   [opts]
   (vec
    (concat
-    (for [k (concat required (compute/required-keys spec opts))
+    (for [k required
           :when (missing? (get opts k))]
       (str k " is required"))
     (when-not (= "cloudflare" (:provider-dns opts))
       [":provider-dns must be cloudflare"])
-    (when-not (contains? #{"local" "s3" "r2"} (:provider-backend opts))
-      [":provider-backend must be local, s3, or r2"])
+    (when-not (contains? #{"s3" "r2"} (:provider-backend opts))
+      [":provider-backend must be s3 or r2"])
     ;; boolean?, not true?. The guard is lifted for exactly one run by
     ;; COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     ;; overlay as every other parameter — so demanding `true` here would reject
@@ -197,11 +183,12 @@
     ;; --- compute: the Compute Cluster Standard's checks are ONCE's over the
     ;; spec — selection, the source lists, the Vultr os id and name rules, the
     ;; canonical VPC CIDR, and the node count as a positive integer.
-    (once-cluster/state-errors spec opts))))
+    (concat (compute/validate opts)
+            (when (empty? (compute/validate opts))
+              (try (planning/plan-deployment opts (cluster/topology opts) (cluster/requirements opts)) []
+                   (catch Exception error [(.getMessage error)])))))))
 
-(defn backend-secrets [opts]
-  (:secrets (get-in once-validate/providers
-                    [:provider-backend (:provider-backend opts)])))
+(defn backend-secrets [opts] (map keyword (get-in compute/registry [:backend (keyword (:provider-backend opts)) :secrets])))
 
 (def dns-secrets
   "What talking to Cloudflare needs, on any real event. The compute
@@ -221,7 +208,7 @@
   provider credentials only; demanding the storage keys to destroy machines
   would be a lock on the exit."
   [opts event]
-  (let [ks (concat (compute/secrets spec opts)
+  (let [ks (concat (map #(keyword (str/replace (str/lower-case (subs % 11)) "_" "-")) (when (= :validate event) (compute/credential-requirements opts)))
                    dns-secrets
                    (when (= :create event) application-secrets)
                    (backend-secrets opts))]
@@ -229,76 +216,13 @@
       (str "required credential is not set: " (green-cli/par-name k)))))
 
 (defn tofu-env [opts slot]
-  (case slot
-    :provider-compute (compute/tofu-env spec opts)
-    :provider-dns {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}
-    :provider-backend (:tofu-env (get-in once-validate/providers
-                                         [:provider-backend (:provider-backend opts)]) {})
-    {}))
+  (case slot :provider-dns {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}
+    :provider-backend (get-in once-validate/providers [:provider-backend (:provider-backend opts) :tofu-env] {}) {}))
 
-;; ------------------------------------------------------------ runtime checks
-
-(def required-tools ["tofu" "ansible-playbook" "ssh" "curl" "openssl"])
-
-(defn- command-present? [runner command]
-  (zero? (:exit (runner ["sh" "-c" "command -v \"$1\" >/dev/null 2>&1" "sh" command] {}))))
-
-(def account-url "https://api.vultr.com/v2/account")
-
-(defn api-error
-  "Turn one probe of the Vultr account endpoint into an error, or nil.
-
-  The distinction is the point. A single message covering every non-2xx status
-  reports a Vultr outage as a bad credential and sends the operator off to
-  rotate a key that was never the problem. Only 401 and 403 say anything about
-  the key. A request that never reached the API at all shows up as curl's
-  literal `000`, which is not an HTTP status: that is the operator's network,
-  and naming it saves the same wasted rotation."
-  [{:keys [exit out]}]
-  (let [status (some-> out str str/trim (as-> s (re-find #"\d{3}\z" s)) parse-long)]
-    (cond
-      (or (nil? status) (zero? status))
-      (str "could not reach the Vultr API at " account-url
-           " (curl exit " exit "): this is a local network, DNS, or TLS "
-           "failure, not a credential problem. Check connectivity and retry.")
-
-      (<= 200 status 299) nil
-
-      (#{401 403} status)
-      (str "Vultr rejected COLORS_PAR_VULTR_API_KEY (HTTP " status
-           "): the key is missing, revoked, or its allowed-subnet list does "
-           "not include this machine. Check the key in the Vultr console and "
-           "update .envrc.private.")
-
-      (= 429 status)
-      (str "Vultr rate-limited the credential check (HTTP 429). The key is "
-           "valid; wait for the limit to reset and retry.")
-
-      (<= 500 status 599)
-      (str "the Vultr API returned HTTP " status " for " account-url
-           ". That is a failure on Vultr's side, not your credential — do not "
-           "rotate COLORS_PAR_VULTR_API_KEY. Check https://status.vultr.com "
-           "and retry.")
-
-      :else
-      (str "unexpected HTTP " status " from " account-url
-           " during the credential check."))))
-
+(def required-tools ["tofu" "aws" "ansible-playbook" "ssh" "ssh-keygen" "curl" "openssl"])
 (defn runtime-errors
-  "Check local tools and authenticate the configured Vultr key. The runner
-  arity keeps command decisions testable without network access."
   ([opts] (runtime-errors opts process/run))
-  ([opts runner]
-   (let [present (into {} (map (fn [t] [t (command-present? runner t)])) required-tools)
-         tool-errors (for [t required-tools :when (not (get present t))]
-                       (str "required tool is not on PATH: " t))
-         key (:vultr-api-key opts)
-         ;; No `-f`: the status code is the diagnosis, so it has to survive
-         ;; into stdout instead of collapsing into curl's exit code.
-         result (when (and (not (missing? key)) (get present "curl"))
-                  (runner ["curl" "-sS" "-o" "/dev/null" "-w" "%{http_code}"
-                           "--connect-timeout" "10" "--max-time" "20"
-                           "-H" (str "Authorization: Bearer " key)
-                           account-url] {}))]
-     (vec (concat tool-errors
-                  (when-let [err (some-> result api-error)] [err]))))))
+  ([_ runner]
+   (vec (for [tool required-tools
+              :when (not= 0 (:exit (runner ["sh" "-c" "command -v \"$1\" >/dev/null 2>&1" "sh" tool] {})))]
+          (str "required tool is not on PATH: " tool)))))

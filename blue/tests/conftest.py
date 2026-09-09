@@ -19,10 +19,13 @@ PARAMS = {
     ],
 }
 
+for node in PARAMS['nodes']:
+    node.update(node_id=str(node['index']), provider='vultr')
+
 
 def _load(name: str, overrides: dict | None = None) -> dict:
     text = (ROOT / "test" / "fixtures" / name).read_text().replace("WORKDIR", ".colors")
-    return {**load_yaml(text), **(overrides or {})}
+    return {**load_yaml(text), "provider-backend": "r2", "blue/event": "build", **(overrides or {})}
 
 
 def fixture(overrides: dict | None = None) -> dict:
@@ -36,5 +39,5 @@ def optout(overrides: dict | None = None) -> dict:
 def applied(overrides: dict | None = None) -> dict:
     """A fixture carrying the compute stage's applied output."""
     return fixture({"profile": "automq-vultr",
-                    "once/cluster": PARAMS,
+                    "colors-compute/cluster": PARAMS,
                     **(overrides or {})})

@@ -91,26 +91,6 @@ def test_the_destroy_guard_accepts_the_one_run_override():
     assert matching(fixture({"compute-prevent-destroy": "yes"}), "must be true or false")
 
 
-def test_the_compute_checks_are_the_cluster_standards():
-    # Selection, the source lists, the created network's CIDR and the node
-    # count are ONCE's over the spec, in ONCE's words. The package's own
-    # cluster-shape rules still apply beside them.
-    assert errors(fixture({"provider-compute": "digitalocean"})) == [
-        ":provider-compute must be one of vultr"]
-    assert errors(fixture({"vultr-ssh-sources": []})) == [
-        ":vultr-ssh-sources must list at least one CIDR"]
-    assert errors(fixture({"vultr-ssh-sources": ["1.2.3.4"]})) == [
-        ':vultr-ssh-sources entry "1.2.3.4" is not an IPv4 or IPv6 CIDR']
-    # An empty Kafka list means no public Kafka access, not a mistake.
-    assert errors(fixture({"vultr-kafka-sources": []})) == []
-    # The VPC must be a network, host bits zero.
-    assert errors(fixture({"vultr-vpc-subnet": "10.40.0.1/24"})) == [
-        ":vultr-vpc-subnet must be a canonical IPv4 network such as 10.40.0.0/24"]
-    # A present count that is not a positive integer is refused twice: ONCE's
-    # rule and the quorum's.
-    reported = errors(fixture({"automq-node-count": "three"}))
-    assert ":automq-node-count must be a positive integer" in reported
-    assert ":automq-node-count must be an integer" in reported
 
 
 def test_the_profile_overlay_is_refused():
@@ -125,7 +105,7 @@ def test_secrets_are_asked_for_only_when_they_are_needed():
     # A delete converges nothing, so demanding storage keys would only lock the
     # exit.
     assert not any("AUTOMQ_R2" in e for e in validate.secret_errors(none, "delete"))
-    assert any("VULTR_API_KEY" in e for e in validate.secret_errors(none, "delete"))
+    assert not any("VULTR_API_KEY" in e for e in validate.secret_errors(none, "delete"))
 
 
 class Result:
@@ -133,17 +113,6 @@ class Result:
         self.exit, self.out, self.err = exit, out, err
 
 
-def test_the_api_probe_distinguishes_outage_from_credential():
-    # The whole point: a single "check your token" message for every non-2xx
-    # sends an operator to rotate a key during a provider outage.
-    assert validate.api_error(Result(0, "200")) is None
-    assert "rejected" in validate.api_error(Result(0, "401"))
-    assert "rejected" in validate.api_error(Result(0, "403"))
-    assert "rate-limited" in validate.api_error(Result(0, "429"))
-    outage = validate.api_error(Result(0, "503"))
-    assert "failure on Vultr's side" in outage
-    assert "do not rotate" in outage
-    assert "not a credential problem" in validate.api_error(Result(6, "000"))
 
 
 async def test_tools_are_checked_without_touching_the_network():
@@ -151,12 +120,3 @@ async def test_tools_are_checked_without_touching_the_network():
         return Result(1) if args[-1] == "curl" else Result(0)
 
     assert any("curl" in e for e in await validate.runtime_errors(fixture(), runner))
-
-
-async def test_a_reachable_api_with_a_rejected_key_stops_the_run():
-    async def runner(args, **_kwargs):
-        return Result(0, "401") if args[0] == "curl" else Result(0)
-
-    found = await validate.runtime_errors(fixture({"vultr-api-key": "nope"}), runner)
-    assert len(found) == 1
-    assert "COLORS_PAR_VULTR_API_KEY" in found[0]

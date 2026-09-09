@@ -6,7 +6,7 @@ workdir: .colors
 
 provider-compute: vultr
 provider-dns: cloudflare
-provider-backend: local
+provider-backend: r2
 
 compute-prevent-destroy: true
 

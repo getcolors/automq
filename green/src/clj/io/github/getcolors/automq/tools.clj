@@ -1,6 +1,7 @@
 (ns io.github.getcolors.automq.tools
   "Compute, DNS, local SSH config, cluster convergence, and acceptance stages."
   (:require [cheshire.core :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [green.ansible :as ansible]
@@ -12,8 +13,8 @@
             [io.github.getcolors.automq.cluster :as cluster]
             [io.github.getcolors.automq.ssh-config :as ssh-config]
             [io.github.getcolors.automq.validate :as validate]
-            [io.github.getcolors.once.compute :as compute]
-            [io.github.getcolors.once.compute-cluster :as once-cluster]
+            [io.github.getcolors.compute-orchestration :as compute]
+            [io.github.getcolors.compute-planning :as planning]
             [io.github.getcolors.once.utils :as once-utils]))
 
 (def infrastructure-tool "automq-infrastructure")
@@ -29,78 +30,44 @@
 (defn spec [source target data] {:template source :target target :data data :opts template-opts})
 (defn raw-spec [target content] (sc/content-spec target content))
 
-(def cidrs
-  "A source list as desired state or an overlay string carries it. ONCE's, so
-  the validator and the templates can never disagree about what an entry is."
-  compute/cidrs)
-
 (defn credential-env [opts & slots]
   (not-empty
    (into {} (keep (fn [[k env-var]]
                     (when-let [v (not-empty (str (get opts k)))] [env-var v])))
          (apply merge (map #(validate/tofu-env opts %) (conj (vec slots) :provider-backend))))))
 
-(defn state-output
-  "The reader ONCE's `read-state` takes: the recorded `params` map, keywordized
-  with the underscores kept (`:ssh_key_id`, `:vpc_ip`), or nil when the state
-  is readable and holds no compute. This package's pre-adoption states already
-  recorded `params` in this shape, only without `provider`, which the Compute
-  Provider Standard reads as the default provider — so there is no legacy
-  translation. An unreadable backend is whatever `green.tofu/outputs` throws,
-  deliberately uncaught: `read-state` turns the SDK's step error into
-  `{:error message}`, and create and delete treat that differently. Kept
-  local so tests can redefine it."
-  [opts]
-  (some-> (:params (tofu/outputs (tool-dir opts infrastructure-tool)
-                                 (credential-env opts)))
-          walk/keywordize-keys))
-
-(defn nodes
-  "The cluster's nodes for every later stage: the recorded cluster under
-  `:once/cluster` on a real run, ONCE's fallbacks on a build."
-  [opts]
-  (cluster/nodes opts))
-
-;; ------------------------------------------------------------------ compute
-
-(defn infrastructure-data [opts]
-  (assoc opts
-         :ssh-keygen (validate/keygen? opts)
-         :node-count (cluster/node-count opts)
-         :compute-name (cluster/compute-name opts)
-         ;; The firewall rule renders this. A Selmer key that is absent
-         ;; renders as empty rather than failing, so omitting it produced
-         ;; `port = ""` — which survives build, golden, dry-run and validate,
-         ;; and is rejected only by the provider on a real apply.
-         :kafka-port (cluster/kafka-port opts)
-         ;; The quorum and inter-broker ports are opened to the VPC subnet
-         ;; only — see the firewall comment in main.tf for why that rule has
-         ;; to exist at all.
-         :controller-port (cluster/controller-port opts)
-         :internal-port (cluster/internal-port opts)
-         :ssh-sources-hcl (tofu/hcl-list (cidrs opts :vultr-ssh-sources))
-         :kafka-sources-hcl (tofu/hcl-list (cidrs opts :vultr-kafka-sources))))
-
-(defn resolved-cluster
-  "The applied compute stage's `params`, adopted under `:once/cluster` for the
-  stages that follow — or ONCE's refusal: no `params` output at all, or a node
-  set that is partial, undeclared, duplicated or incomplete, exits 1 rather
-  than rendering a quorum string against the documentation addresses."
-  [opts result]
-  (once-cluster/resolved-cluster cluster/spec opts result {}
-                                 (once-cluster/output-params result)))
+(defn nodes [opts] (cluster/nodes opts))
+(defn- compute-json [value indent]
+  (let [padding #(apply str (repeat % " "))]
+    (cond
+      (map? value) (if (empty? value) "{}"
+                      (str "{\n" (str/join ",\n" (for [[key item] (sort-by key value)]
+                                                       (str (padding (+ indent 2)) (json/generate-string key) ": " (compute-json item (+ indent 2)))))
+                           "\n" (padding indent) "}"))
+      (sequential? value) (if (empty? value) "[]"
+                              (str "[\n" (str/join ",\n" (map #(str (padding (+ indent 2)) (compute-json % (+ indent 2))) value)) "\n" (padding indent) "]"))
+      :else (json/generate-string value))))
 
 (defn infrastructure-step [opts]
-  (let [dir (tool-dir opts infrastructure-tool)
-        specs [(spec (template "infrastructure" "main.tf") (str dir "/main.tf")
-                     (infrastructure-data opts))]
-        result (tofu/tofu-with-spec opts specs
-                                    {:dir dir :env (credential-env opts :provider-compute)})]
-    (cond
-      (wf/failed? result) result
-      (= :build (:green/event opts)) result
-      (= :delete (:green/event opts)) result
-      :else (resolved-cluster opts result))))
+  (try
+    (let [planning? (or (= :build (:green/event opts)) (:green/dry-run opts))
+          result (if planning?
+                   (planning/plan-deployment opts (cluster/topology opts) (cluster/requirements opts))
+                   (compute/orchestrate opts (cluster/topology opts) (cluster/requirements opts)))]
+      (when planning?
+        (doseq [[stage documents] (cons ["shared" (get-in result [:documents :shared])]
+                                      (map (fn [[id documents]] [(str "nodes/" id) documents]) (get-in result [:documents :nodes])))
+                [filename document] documents]
+          (let [target (io/file (tool-dir opts infrastructure-tool) stage filename)]
+            (io/make-parents target)
+            (spit target (str (compute-json document 0) "\n")))))
+      (if-not (contains? #{"ready" "planned" "destroyed"} (:status result))
+        (assoc opts :green/exit 1 :green/err (if (seq (:errors result)) (str/join "\n" (:errors result)) "compute lifecycle refused; inspect state ownership and configuration"))
+        (cond-> (assoc opts :green/exit 0)
+          (:cluster result) (assoc :colors-compute/cluster (:cluster result))
+          (get-in result [:key :private_key_path])
+          (assoc :ssh-private-key-path (if planning? (str/replace (get-in result [:key :private_key_path]) "$HOME/.ssh" "/home/build-placeholder/.ssh") (get-in result [:key :private_key_path]))))))
+    (catch Exception _ (assoc opts :green/exit 1 :green/err "compute lifecycle refused; legacy monolithic state requires explicit migration"))))
 
 ;; ---------------------------------------------------------------------- dns
 
@@ -156,8 +123,8 @@
   is identical on every workstation (SSH Config Standard §6)."
   [opts]
   (assoc opts
-         :ssh-keygen (validate/keygen? opts)
-         :ssh-config-identity-file (ssh-config/identity-file opts)
+         :ssh-keygen (or (validate/keygen? opts) (boolean (:ssh-private-key-path opts)))
+         :ssh-config-identity-file (if (validate/keygen? opts) (ssh-config/identity-file opts) (or (:ssh-private-key-path opts) ""))
          :host-alias (ssh-config/host-alias opts)))
 
 (defn ansible-local-specs [opts]
@@ -168,10 +135,10 @@
 
 (defn ssh-config-hosts
   "The `~/.ssh/config` entries, as data the play loops over: the bare profile
-  pointing at node 0 (the spec's entry), then one alias per node. ONCE's
-  (Compute Cluster Standard §6)."
+  pointing at node 0, then one alias per normalized library node."
   [opts nodes*]
-  (once-cluster/ssh-config-hosts cluster/spec opts nodes*))
+  (into [(assoc (first nodes*) :name (:profile opts))]
+        (map #(assoc % :name (str (:profile opts) "-" (:index %))) nodes*)))
 
 (defn ansible-local-step
   "Write or remove the `~/.ssh/config` block. The same playbook serves both
@@ -241,7 +208,7 @@
   [opts]
   (let [nodes* (nodes opts)]
     (assoc opts
-           :ssh-keygen (validate/keygen? opts)
+           :ssh-keygen (or (validate/keygen? opts) (boolean (:ssh-private-key-path opts)))
            :node-count (cluster/node-count opts)
            :quorum-voters (cluster/quorum-voters opts nodes*)
            :certificate-names (cluster/certificate-names opts)
@@ -278,7 +245,7 @@
 
 (defn ansible-step [opts]
   (let [dir (tool-dir opts ansible-tool)]
-    (if (and (= :delete (:green/event opts)) (nil? (:once/cluster opts)))
+    (if (and (= :delete (:green/event opts)) (nil? (:colors-compute/cluster opts)))
       ;; A readable state without compute: there is nothing to stop, and the
       ;; cleanup play would only fail against the placeholder addresses. (An
       ;; unreadable state, or a partial one, never reaches here — the delete

@@ -8,11 +8,14 @@ together, so one run is enough to fix a file.
 
 | Purpose | Environment variable |
 |---|---|
-| Vultr API | `COLORS_PAR_VULTR_API_KEY` |
 | Cloudflare DNS (records and the DNS-01 challenge) | `COLORS_PAR_CLOUDFLARE_API_TOKEN` |
 | AutoMQ object storage | `COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID`, `COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY` |
 | R2 state backend | `COLORS_PAR_R2_ACCESS_KEY_ID`, `COLORS_PAR_R2_SECRET_ACCESS_KEY` |
-| S3 state backend | `COLORS_PAR_S3_ACCESS_KEY_ID`, `COLORS_PAR_S3_SECRET_ACCESS_KEY` |
+| S3 state backend | Ambient AWS credential chain |
+
+Compute credentials and provider options follow the version of
+[colors-compute](https://github.com/getcolors/colors-compute) pinned by this
+skill. The library also owns R2 and S3 remote state configuration.
 
 Never export `COLORS_PAR_PROFILE`.
 
@@ -81,11 +84,21 @@ waits on an S3 write, so raising it trades latency for throughput.
 
 ### Compute
 
-`vultr-region`, `vultr-plan`, `vultr-os-id`, `vultr-vpc-subnet`,
-`vultr-ssh-sources`, `vultr-kafka-sources`. There is no required `vultr-name`:
-machines are named after the profile with a numeric suffix, and the key exists
-only as an override. Omitting `vultr-ssh-keys` selects keygen mode, where the
-package owns `~/.ssh/<profile>`.
+Set `provider-compute` and that provider's options from the pinned
+colors-compute library. AutoMQ requires a private network with private-source
+firewall filtering. The library rejects providers that cannot meet this
+requirement. Supporting another compatible provider requires a library pin bump.
+
+`automq-ssh-sources` controls SSH ingress and must be nonempty.
+`automq-kafka-sources` controls client ingress and may be empty. The library
+also accepts the corresponding legacy provider-prefixed source keys.
+Machines are named `<profile>-<node-id>` unless the provider name override is
+set. The library owns the managed profile keypair, or uses explicitly configured
+external keys and their private identity path.
+
+Set `provider-backend` to `r2` or `s3`. Compute uses separate shared and per-node
+state objects plus a deployment journal. Existing monolithic compute state is
+refused and requires an explicit migration before create or delete.
 
 ## Recovery
 

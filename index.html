@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Provision a three-node AutoMQ cluster on Vultr — Kafka-compatible brokers whose storage tier is Cloudflare R2 — behind a public SASL_SSL endpoint with SCRAM authentication and ACL authorization.">
+  <meta name="description" content="Provision a three-node AutoMQ cluster using colors-compute, Kafka-compatible brokers whose storage tier is Cloudflare R2 — behind a public SASL_SSL endpoint with SCRAM authentication and ACL authorization.">
   <title>AutoMQ Package Skill — getcolors</title>
   <style>
     :root{color-scheme:light;--ink:#1f2328;--muted:#59636e;--line:#d0d7de;--soft:#f6f8fa;--blue:#0969da;--green:#1a7f37;--warn:#9a6700}*{box-sizing:border-box}body{margin:0;color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:64px 28px 100px}h1{font-size:52px;line-height:1.05;margin:0}h2{margin-top:54px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{margin-top:30px}.lead{font-size:20px;color:var(--muted);max-width:790px}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:18px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--soft)}:not(pre)>code{padding:.12em .35em;border-radius:5px;background:var(--soft)}a{color:var(--blue)}.eyebrow{color:var(--green);font-weight:700;letter-spacing:.08em}.callout{padding:16px 18px;border-left:4px solid var(--green);background:#dafbe1}.warning{border-color:var(--warn);background:#fff8c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:8px}.card h3{margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}@media(max-width:650px){main{padding-top:38px}.grid{grid-template-columns:1fr}h1{font-size:40px}}
@@ -15,7 +15,7 @@
 <body><main>
   <p class="eyebrow">GREEN · RED · BLUE PACKAGE SKILL · VULTR · AUTOMQ</p>
   <h1>AutoMQ Package Skill</h1>
-  <p class="lead">A reproducible workflow for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster on Vultr — the Kafka 3.9 wire protocol over brokers whose storage tier is object storage rather than replicated disks. Shipped in Clojure, TypeScript and Python, rendering the same bytes from one <code>colors.yml</code>.</p>
+  <p class="lead">A reproducible workflow for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster using colors-compute, the Kafka 3.9 wire protocol over brokers whose storage tier is object storage rather than replicated disks. Shipped in Clojure, TypeScript and Python, rendering the same bytes from one <code>colors.yml</code>.</p>
 
   <div class="callout"><strong>Replication factor 1 is the design, not a mistake.</strong> AutoMQ acknowledges a produce once the record is in Cloudflare R2, so replicas would add cost and write amplification without adding durability — upstream ships RF=1 for the same reason. The three nodes buy a controller quorum, partition failover, and throughput. What RF=1 does <em>not</em> buy is availability, which is why acceptance kills a broker that leads a specific partition and measures how long that partition stays unwritable.</div>
 
@@ -30,7 +30,7 @@ chmod +x green
 
   <h2>Architecture</h2>
   <div class="grid">
-    <div class="card"><h3>Compute</h3><p>Three Vultr instances in one VPC, and a firewall that opens 22 and 9092 — nothing else. The controller quorum and inter-broker replication never touch the public interface.</p></div>
+    <div class="card"><h3>Compute</h3><p>Three machines on a private network provisioned by colors-compute, with public SSH and client access and private quorum rules. The controller quorum and inter-broker replication never touch the public interface.</p></div>
     <div class="card"><h3>Storage tier</h3><p>Two R2 buckets, adopted and never created. AutoMQ writes hash-prefixed keys at the bucket root and supports no path prefix, so each bucket belongs to one cluster outright — proven empty before it is claimed.</p></div>
     <div class="card"><h3>Identity</h3><p>Four principals, no anonymous access anywhere. The controller listener uses PLAIN from a static JAAS entry; inter-broker and public listeners use SCRAM bootstrapped into the metadata log at genesis.</p></div>
     <div class="card"><h3>Acceptance</h3><p>Six gates on the hosts and seven from the workstation, including a targeted failover: the partition is chosen because node 2 leads it, so the test cannot pass without exercising the broker it killed.</p></div>

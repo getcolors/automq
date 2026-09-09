@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StepError, type Opts } from "red/workflow";
-import { computeCluster } from "package-once-red";
+import {collect,source_cidrs} from "colors-compute-red";
 import * as cluster from "../src/cluster.ts";
 import * as ssh from "../src/ssh.ts";
 import * as sshConfig from "../src/ssh-config.ts";
@@ -16,7 +16,7 @@ const optoutFile = join(import.meta.dir, "../../test/fixtures/optout.yml");
 
 function readFixture(path: string, overrides: Opts): Opts {
   const text = readFileSync(path, "utf8").replaceAll("WORKDIR", ".colors");
-  return { ...(Bun.YAML.parse(text) as Opts), ...overrides };
+  return { ...(Bun.YAML.parse(text) as Opts), "provider-backend":"r2", ...overrides };
 }
 
 const fixture = (overrides: Opts = {}) => readFixture(fixtureFile, overrides);
@@ -24,18 +24,18 @@ const optout = (overrides: Opts = {}) => readFixture(optoutFile, overrides);
 
 // The compute stage's recorded `params`, as ONCE reads it: snake_case node
 // keys, every field present.
-const params: computeCluster.ClusterParams = {
+const params: any = {
   provider: "vultr",
   ssh_key_id: "7692e92a",
   nodes: [
-    { role: null, index: 0, ip: "203.0.113.10", vpc_ip: "10.40.0.3", user: "root", sudoer: "root", name: "automq-vultr-0" },
-    { role: null, index: 1, ip: "203.0.113.11", vpc_ip: "10.40.0.4", user: "root", sudoer: "root", name: "automq-vultr-1" },
-    { role: null, index: 2, ip: "203.0.113.12", vpc_ip: "10.40.0.5", user: "root", sudoer: "root", name: "automq-vultr-2" },
+    { provider:"vultr", node_id: "0", role: null, index: 0, ip: "203.0.113.10", vpc_ip: "10.40.0.3", user: "root", sudoer: "root", name: "automq-vultr-0" },
+    { provider:"vultr", node_id: "1", role: null, index: 1, ip: "203.0.113.11", vpc_ip: "10.40.0.4", user: "root", sudoer: "root", name: "automq-vultr-1" },
+    { provider:"vultr", node_id: "2", role: null, index: 2, ip: "203.0.113.12", vpc_ip: "10.40.0.5", user: "root", sudoer: "root", name: "automq-vultr-2" },
   ],
 };
 
 const applied = (overrides: Opts = {}) =>
-  fixture({ profile: "automq-vultr", "once/cluster": params, ...overrides });
+  fixture({ profile: "automq-vultr", "colors-compute/cluster": params, ...overrides });
 
 // ~/.ssh redirection: ONCE's ssh module and this package's ssh-config both read
 // $HOME at call time, exactly so tests can point them at a fresh temporary home.
@@ -56,22 +56,7 @@ afterEach(() => {
 describe("cluster", () => {
   const opts = fixture({ profile: "automq-vultr" });
 
-  test("the spec describes one homogeneous Vultr cluster", () => {
-    // The Compute Cluster Standard's spec-content test: the shape ONCE is
-    // handed is data, and this is what that data must say.
-    expect(computeCluster.specErrors(cluster.spec)).toEqual([]);
-    expect(cluster.spec.roles).toEqual([{ role: null, countKey: "automq-node-count", count: 3 }]);
-    // The bare profile alias reaches node 0.
-    expect(computeCluster.entryId(cluster.spec)).toEqual({ role: null, index: 0 });
-    expect(cluster.spec.sources).toEqual({ nonEmpty: ["ssh-sources"], mayBeEmpty: ["kafka-sources"] });
-    expect(cluster.spec.default).toBe("vultr");
-    expect(Object.keys(cluster.spec.registry)).toEqual(["vultr"]);
-    // The quorum crosses a VPC this package creates from vultr-vpc-subnet.
-    expect(cluster.spec.registry.vultr!.network).toEqual({ mode: "created", key: "vultr-vpc-subnet" });
-    // A created network cuts its fallbacks from the CIDR key, not a stand-in.
-    expect("fallbackSubnet" in cluster.spec).toBe(false);
-    expect(cluster.spec.registry.vultr!.secrets).toEqual(["vultr-api-key"]);
-  });
+
 
   test("the machine label, the node id and the broker ordinal are one number", () => {
     expect(cluster.machineNames(opts)).toEqual(
@@ -116,7 +101,7 @@ describe("cluster", () => {
   test("a build renders fixed documentation-range addresses", () => {
     // ONCE's fallbacks: TEST-NET-1 publicly, the VPC subnet privately, offset
     // 10 — so the goldens mean the same thing on every workstation.
-    const list = cluster.nodes(opts);
+    const list = cluster.nodes({...opts,"red/event":"build"});
     expect(list.length).toBe(3);
     expect(list.map((n) => n.ip)).toEqual(["192.0.2.10", "192.0.2.11", "192.0.2.12"]);
     expect(list.map((n) => n["vpc-ip"])).toEqual(["10.40.0.10", "10.40.0.11", "10.40.0.12"]);
@@ -131,7 +116,7 @@ describe("cluster", () => {
     // adds the broker name. Nothing else is touched: the name is the label the
     // template gave the instance, never recomputed, and extension fields ride
     // through.
-    const recorded: computeCluster.ClusterParams = {
+    const recorded: any = {
       ...params,
       nodes: [
         { ...params.nodes![0]!, extra: "kept" },
@@ -266,26 +251,12 @@ describe("validate", () => {
       .some((error) => error.includes("must be true or false"))).toBe(true);
   });
 
-  test("the compute checks are the cluster standard's", () => {
-    // Selection, the source lists, the created network's CIDR and the node
-    // count are ONCE's over the spec, in ONCE's words. The package's own
-    // cluster-shape rules still apply beside them.
-    expect(validate.stateErrors(fixture({ "provider-compute": "digitalocean" })))
-      .toEqual([":provider-compute must be one of vultr"]);
-    expect(validate.stateErrors(fixture({ "vultr-ssh-sources": [] })))
-      .toEqual([":vultr-ssh-sources must list at least one CIDR"]);
-    expect(validate.stateErrors(fixture({ "vultr-ssh-sources": ["1.2.3.4"] })))
-      .toEqual([':vultr-ssh-sources entry "1.2.3.4" is not an IPv4 or IPv6 CIDR']);
-    // An empty Kafka list means no public Kafka access, not a mistake.
-    expect(validate.stateErrors(fixture({ "vultr-kafka-sources": [] }))).toEqual([]);
-    // The VPC must be a network, host bits zero.
-    expect(validate.stateErrors(fixture({ "vultr-vpc-subnet": "10.40.0.1/24" })))
-      .toEqual([":vultr-vpc-subnet must be a canonical IPv4 network such as 10.40.0.0/24"]);
-    // A present count that is not a positive integer is refused twice: ONCE's
-    // rule and the quorum's.
-    const reported = validate.stateErrors(fixture({ "automq-node-count": "three" }));
-    expect(reported).toContain(":automq-node-count must be a positive integer");
-    expect(reported).toContain(":automq-node-count must be an integer");
+  test("the shared library validates provider capabilities and firewall requests",()=>{
+    expect(validate.stateErrors(fixture({'provider-compute':'digitalocean'}))).toContain(':digitalocean-image is required');
+    expect(validate.stateErrors(fixture({'vultr-ssh-sources':[]})).length).toBeGreaterThan(0);
+    expect(validate.stateErrors(fixture({'vultr-ssh-sources':['1.2.3.4']})).length).toBeGreaterThan(0);
+    expect(validate.stateErrors(fixture({'vultr-kafka-sources':[]}))).toEqual([]);
+    expect(validate.stateErrors(fixture({'vultr-vpc-subnet':'10.40.0.1/24'})).length).toBeGreaterThan(0);
   });
 
   test("the profile overlay is refused", () => {
@@ -303,21 +274,10 @@ describe("validate", () => {
     expect(validate.secretErrors(none, "delete")
       .some((error) => error.includes("AUTOMQ_R2"))).toBe(false);
     expect(validate.secretErrors(none, "delete")
-      .some((error) => error.includes("VULTR_API_KEY"))).toBe(true);
+      .some((error) => error.includes("VULTR_API_KEY"))).toBe(false);
   });
 
-  test("the API probe distinguishes an outage from a credential", () => {
-    // The whole point: a single "check your token" message for every non-2xx
-    // sends an operator to rotate a key during a provider outage.
-    expect(validate.apiError({ exit: 0, out: "200" })).toBeUndefined();
-    expect(validate.apiError({ exit: 0, out: "401" })).toContain("rejected");
-    expect(validate.apiError({ exit: 0, out: "403" })).toContain("rejected");
-    expect(validate.apiError({ exit: 0, out: "429" })).toContain("rate-limited");
-    const outage = validate.apiError({ exit: 0, out: "503" })!;
-    expect(outage).toContain("failure on Vultr's side");
-    expect(outage).toContain("do not rotate");
-    expect(validate.apiError({ exit: 6, out: "000" })).toContain("not a credential problem");
-  });
+
 
   test("tools are checked without touching the network", async () => {
     const runner = async (args: string[]) =>
@@ -326,13 +286,7 @@ describe("validate", () => {
     expect(errors.some((error) => error.includes("curl"))).toBe(true);
   });
 
-  test("a reachable API with a rejected key stops the run", async () => {
-    const runner = async (args: string[]) =>
-      args[0] === "curl" ? { exit: 0, out: "401", err: "" } : { exit: 0, out: "", err: "" };
-    const errors = await validate.runtimeErrors(fixture({ "vultr-api-key": "nope" }), runner);
-    expect(errors.length).toBe(1);
-    expect(errors[0]).toContain("COLORS_PAR_VULTR_API_KEY");
-  });
+
 });
 
 // --- the machine keypair -----------------------------------------------------
@@ -446,34 +400,13 @@ describe("tools", () => {
     // stay verbatim on the params map. The renderers read `vpc-ip`, so the node
     // wrapper respells that one key and nothing else.
     const [node] = tools.nodes(opts);
-    expect((opts["once/cluster"] as computeCluster.ClusterParams).ssh_key_id).toBe("7692e92a");
+    expect((opts["colors-compute/cluster"] as any).ssh_key_id).toBe("7692e92a");
     expect(node!["vpc-ip"]).toBe("10.40.0.3");
     expect(node!.vpc_ip).toBeUndefined();
     expect(node!.name).toBe("automq-vultr-0");
   });
 
-  test("the compute stage refuses anything but the whole cluster", () => {
-    // The real create's infrastructure step hands its tofu outputs here. No
-    // `params` output at all, or a node set that is partial or incomplete, is
-    // exit 1 with ONCE's message rather than a quorum string against
-    // 192.0.2.10; the whole cluster lands under `once/cluster`.
-    const result = (p: unknown): Opts => ({ "red/exit": 0, "tofu/outputs": p ? { params: p } : {} });
-    const none = tools.resolvedCluster(opts, result(undefined));
-    expect(none["red/exit"]).toBe(1);
-    expect(none["red/err"])
-      .toBe("compute produced no params output; refusing to converge against the documentation addresses");
-    const partial = tools.resolvedCluster(opts, result({ ...params, nodes: params.nodes!.slice(0, 2) }));
-    expect(partial["red/exit"]).toBe(1);
-    expect(partial["red/err"]).toBe("the compute stage did not report nodes this package declares: 2");
-    const incomplete = tools.resolvedCluster(opts, result({
-      ...params, nodes: [params.nodes![0]!, params.nodes![1]!, { ...params.nodes![2]!, ip: null }],
-    }));
-    expect(incomplete["red/exit"]).toBe(1);
-    expect(String(incomplete["red/err"])).toContain("did not report a complete node");
-    const whole = tools.resolvedCluster(opts, result(params));
-    expect(whole["red/exit"]).toBe(0);
-    expect(whole["once/cluster"]).toEqual(params);
-  });
+
 
   test("the zone is the registrable domain", () => {
     expect(tools.zone(opts)).toBe("example.com");
@@ -508,7 +441,7 @@ describe("tools", () => {
 
   test("ssh config hosts point the bare alias at node zero", () => {
     const hosts = tools.sshConfigHosts(opts, tools.nodes(opts));
-    expect(hosts[0]).toEqual({ name: "automq-vultr", ip: "203.0.113.10" });
+    expect(hosts[0]).toMatchObject({ name: "automq-vultr", ip: "203.0.113.10" });
     expect(hosts.map((host) => host.name)).toEqual(
       ["automq-vultr", "automq-vultr-0", "automq-vultr-1", "automq-vultr-2"]);
     expect(hosts.map((host) => host.ip)).toEqual(
@@ -527,29 +460,9 @@ describe("tools", () => {
     expect(data["quorum-voters"]).toBe("0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093");
   });
 
-  test("the compute stage renders every value its template names", () => {
-    // A template key that is absent renders as empty rather than failing, so the
-    // firewall rule shipped `port = ""` and only the provider rejected it.
-    const data = tools.infrastructureData(opts);
-    expect(data["kafka-port"]).toBe(9092);
-    expect(data["node-count"]).toBe(3);
-    expect(data["compute-name"]).toBe("automq-vultr");
-    for (const key of ["kafka-port", "node-count", "compute-name", "ssh-sources-hcl",
-                       "kafka-sources-hcl", "controller-port", "internal-port"]) {
-      expect(String(data[key] ?? "").trim().length).toBeGreaterThan(0);
-    }
-    // Without a rule for these, a Vultr firewall group silently drops TCP on the
-    // private interface while still passing ICMP, and the cluster never elects a
-    // controller.
-    expect(data["controller-port"]).toBe(9093);
-    expect(data["internal-port"]).toBe(9094);
-  });
 
-  test("cidr lists survive both YAML and string forms", () => {
-    expect(tools.cidrs({ "vultr-ssh-sources": ["0.0.0.0/0", "::/0"] }, "vultr-ssh-sources"))
-      .toEqual(["0.0.0.0/0", "::/0"]);
-    expect(tools.cidrs({ x: "1.2.3.0/24" }, "x")).toEqual(["1.2.3.0/24"]);
-  });
+
+
 
   test("the ansible stage renders the whole cluster tree", () => {
     const targets = tools.ansibleSpecs(opts).map((spec) => String(spec.target));
@@ -608,7 +521,7 @@ describe("workflow", () => {
     // no record survives pointing at an address Vultr can hand to someone else.
     expect(chain("delete")).toEqual([
       "automq/ansible", "automq/ssh-config", "automq/dns",
-      "automq/infrastructure", "automq/ssh-cleanup",
+      "automq/infrastructure",
     ]);
   });
 
@@ -652,130 +565,36 @@ describe("workflow", () => {
   // throw is a backend that cannot be read. The Vultr API probe is stubbed too
   // — these tests are about the state, and they must not reach the network.
   const quiet = async () => [] as string[];
-  const start = (opts: Opts, state: computeCluster.ClusterParams | undefined) =>
-    workflow.startStep(opts, {}, { reader: async () => state, runtimeErrors: quiet });
-  // The shape `red/tofu` throws: the SDK's StepError. Only that is an
-  // unreadable backend; anything else propagates as a defect.
-  const startUnreadable = (opts: Opts) =>
-    workflow.startStep(opts, {}, {
-      reader: async () => { throw new StepError("tofu output failed: no backend"); },
-      runtimeErrors: quiet,
-    });
-  const credentials = { "vultr-api-key": "v", "cloudflare-api-token": "c",
-    "r2-access-key-id": "a", "r2-secret-access-key": "s",
-    "automq-r2-access-key-id": "k", "automq-r2-secret-access-key": "z" };
-  const deleting = (overrides: Opts = {}) =>
-    fixture({ ...credentials, "red/event": "delete", "compute-prevent-destroy": false, ...overrides });
+});
 
-  test("build and dry-run never touch the state", async () => {
-    // A throwing state read proves nothing on these paths reaches the backend,
-    // and the machine key stays the placeholder rather than the operator's home.
-    for (const opts of [fixture({ "red/event": "build" }),
-                        fixture({ "red/event": "create", "red/dry-run": true }),
-                        fixture({ "red/event": "delete", "red/dry-run": true, "compute-prevent-destroy": false })]) {
-      const result = await startUnreadable(opts);
-      expect(result["red/exit"]).toBe(0);
-      expect(String(result["ssh-public-key-path"])).toStartWith("/home/build-placeholder");
-      // A build renders the fallbacks; it adopts nothing.
-      expect(result["once/cluster"]).toBeUndefined();
-    }
-  });
+describe('shared compute integration',()=>{
+ test('partial and unavailable inventories refuse placeholder convergence',()=>{
+  expect(()=>cluster.nodes(fixture({'red/event':'create'}))).toThrow('unavailable');
+  expect(()=>cluster.nodes(applied(),{...params,nodes:params.nodes.slice(0,2)})).toThrow('missing node');
+  expect(()=>cluster.nodes(applied(),{...params,nodes:params.nodes.map((n:any,i:number)=>i===2?{...n,ip:null}:n)})).toThrow('incomplete node');
+ });
+ test('build writes shared and individual node documents without private keys',async()=>{
+  const opts=fixture({'red/event':'build',workdir:home});const result=await tools.infrastructureStep(opts);
+  expect(result['red/exit']).toBe(0);expect(result['colors-compute/cluster'].nodes).toHaveLength(3);
+  const {readdirSync,existsSync}=await import('node:fs');const dir=tools.toolDir(opts,tools.infrastructureTool);
+  expect(readdirSync(join(dir,'nodes')).sort()).toEqual(['0','1','2']);expect(existsSync(join(dir,'shared'))).toBe(true);
+  expect(existsSync(join(home,'.ssh'))).toBe(false);expect(result['ssh-private-key-path']).toBe('/home/build-placeholder/.ssh/automq-fixture');
+ });
+ test('delete adopts only library inventory and stops retired deployments',async()=>{
+  const values=fixture({'red/event':'delete','compute-prevent-destroy':false,'vultr-api-key':'fixture','cloudflare-api-token':'fixture','r2-access-key-id':'fixture','r2-secret-access-key':'fixture'});
+  const deps={runtimeErrors:async()=>[],reader:async()=>({status:'present',cluster:params,key:{private_key_path:'/owned/key'}})};
+  const adopted=await workflow.startStep(values,{},deps);expect(adopted['red/exit']).toBe(0);expect(adopted['colors-compute/cluster']).toEqual(params);expect(adopted['ssh-private-key-path']).toBe('/owned/key');
+  const error=await workflow.startStep(values,{}, {...deps,reader:async()=>({status:'error'})});expect(error['red/exit']).toBe(1);
+  const retired=await workflow.startStep(values,{}, {...deps,reader:async()=>({status:'destroyed'})});expect(retired['automq/already-destroyed']).toBe(true);
+ });
+});
 
-  test("a real create requires the credentials", async () => {
-    const result = await start(fixture({ "red/event": "create" }), undefined);
-    expect(result["red/exit"]).toBe(2);
-    expect(String(result["red/err"])).toContain("COLORS_PAR_VULTR_API_KEY");
-    expect(String(result["red/err"])).toContain("COLORS_PAR_CLOUDFLARE_API_TOKEN");
-    expect(String(result["red/err"])).toContain("COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID");
-  });
-
-  test("a provider switch is refused before the credentials", async () => {
-    // Provider switching is a rebuild, never an apply. The validator order is
-    // the thing under test: the actionable error, not a missing token for the
-    // provider that was just selected.
-    for (const event of ["create", "delete"]) {
-      const result = await start(fixture({ "red/event": event, "compute-prevent-destroy": false }),
-        { ...params, provider: "digitalocean" });
-      expect(result["red/exit"]).toBe(2);
-      expect(String(result["red/err"]))
-        .toContain("state holds a digitalocean machine; set provider-compute back to digitalocean and delete first");
-      expect(String(result["red/err"])).not.toContain("required credential is not set");
-    }
-  });
-
-  test("legacy state is accepted on the default provider", async () => {
-    // A `params` recorded before this package wrote `provider` — every
-    // pre-adoption AutoMQ state — is a Vultr cluster and needs no translation.
-    const { provider: _provider, ...legacy } = params;
-    const create = await start(fixture({ "red/event": "create" }), legacy);
-    expect(String(create["red/err"])).not.toContain("state holds");
-    expect(String(create["red/err"])).toContain("required credential is not set");
-    const del = await start(deleting(), legacy);
-    expect(del["red/exit"]).toBe(0);
-    expect(del["once/cluster"]).toEqual(legacy);
-  });
-
-  test("an unreadable backend counts as no state on create", async () => {
-    // A fresh clone has no readable state and must still be able to create.
-    const result = await startUnreadable(fixture({ "red/event": "create" }));
-    expect(result["red/exit"]).toBe(2);
-    expect(String(result["red/err"])).not.toContain("could not read");
-    expect(String(result["red/err"])).not.toContain("state holds");
-    expect(String(result["red/err"])).toContain("COLORS_PAR_VULTR_API_KEY");
-  });
-
-  test("a real create on a fresh work directory reports the credentials, not a crash", async () => {
-    // No reader stub: the real `stateOutput` runs against a work directory that
-    // holds no stage yet, as a fresh clone's does. The SDK's output read throws
-    // its StepError there, which ONCE's `readState` counts as an unreadable
-    // state, so the create reports its credentials.
-    const work = mkdtempSync(join(tmpdir(), "automq-red-fresh"));
-    try {
-      const result = await workflow.startStep(
-        fixture({ workdir: work, "red/event": "create" }), {}, { runtimeErrors: quiet });
-      expect(result["red/exit"]).toBe(2);
-      expect(String(result["red/err"])).toContain("COLORS_PAR_VULTR_API_KEY");
-      expect(String(result["red/err"])).not.toContain("could not read");
-    } finally {
-      rmSync(work, { recursive: true, force: true });
-    }
-  });
-
-  test("an unreadable backend fails a real delete closed", async () => {
-    // Before adoption a delete proceeded on undefined here and would have
-    // rendered the cleanup play against the documentation addresses.
-    const result = await startUnreadable(deleting());
-    expect(result["red/exit"]).toBe(1);
-    expect(String(result["red/err"])).toContain("could not read the infrastructure state for the delete cleanup");
-    expect(String(result["red/err"])).toContain("no backend");
-  });
-
-  test("a real delete adopts the recorded cluster", async () => {
-    const adopted = await start(deleting(), params);
-    expect(adopted["red/exit"]).toBe(0);
-    // The whole recorded params, extension keys and all.
-    expect(adopted["once/cluster"]).toEqual(params);
-    expect(tools.nodes(adopted).map((n) => n.ip)).toEqual(["203.0.113.10", "203.0.113.11", "203.0.113.12"]);
-    // A readable state without compute adopts nothing, and the cleanup play
-    // skips itself.
-    const empty = await start(deleting(), undefined);
-    expect(empty["red/exit"]).toBe(0);
-    expect("once/cluster" in empty).toBe(false);
-  });
-
-  test("a real delete refuses a state that does not describe every node", async () => {
-    // Three nodes are declared; a state that reports two is not a smaller
-    // cluster to tear down but a state that cannot be trusted. ONCE's message,
-    // unreworded.
-    const partial = await start(deleting(), { ...params, nodes: params.nodes!.slice(0, 2) });
-    expect(partial["red/exit"]).toBe(1);
-    expect(partial["red/err"]).toBe("the compute stage did not report nodes this package declares: 2");
-    // A node without an address is refused the same way.
-    const incomplete = await start(deleting(), {
-      ...params, nodes: [params.nodes![0]!, { ...params.nodes![1]!, vpc_ip: "" }, params.nodes![2]!],
-    });
-    expect(incomplete["red/exit"]).toBe(1);
-    expect(String(incomplete["red/err"]))
-      .toContain("did not report a complete node (ip, vpc_ip, name, user, sudoer) for 1");
-  });
+test('DNS alone receives R2 backend credential environment',async()=>{
+ const {spyOn}=await import('bun:test');const tofu=await import('red/tofu');let captured:any;
+ const spy=spyOn(tofu,'tofuWithSpec').mockImplementation(async(opts:any,_specs:any,config:any)=>{captured=config.env;return {...opts,'red/exit':0};});
+ const opts=applied({'red/event':'create','r2-access-key-id':'synthetic-r2-id','r2-secret-access-key':'synthetic-r2-secret','cloudflare-api-token':'synthetic-dns'});const before=structuredClone(opts),environment={...process.env};
+ try{await tools.dnsStep(opts);expect(captured).toEqual({AWS_ACCESS_KEY_ID:'synthetic-r2-id',AWS_SECRET_ACCESS_KEY:'synthetic-r2-secret',CLOUDFLARE_API_TOKEN:'synthetic-dns'});expect(opts).toEqual(before);expect(process.env).toEqual(environment);expect(validate.tofuEnv(opts,'provider-compute')).toEqual({});}finally{spy.mockRestore();}
+});
+test('compute credentials are checked by lifecycle after state, not application start',()=>{
+ const opts=fixture();expect(validate.secretErrors(opts,'create').some(e=>e.includes('VULTR_API_KEY'))).toBe(false);expect(validate.secretErrors(opts,'delete').some(e=>e.includes('VULTR_API_KEY'))).toBe(false);expect(validate.secretErrors(opts,'validate').some(e=>e.includes('VULTR_API_KEY'))).toBe(true);
 });

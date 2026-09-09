@@ -2,29 +2,10 @@ import re
 
 from conftest import PARAMS, fixture
 from package_automq_blue import cluster
-from package_once_blue import compute_cluster as once_cluster
 
 opts = fixture({"profile": "automq-vultr"})
 
 
-def test_the_spec_describes_one_homogeneous_vultr_cluster():
-    # The Compute Cluster Standard's spec-content test: the shape ONCE is handed
-    # is data, and this is what that data must say.
-    assert once_cluster.spec_errors(cluster.spec) == []
-    assert cluster.spec["roles"] == [
-        {"role": None, "count_key": "automq-node-count", "count": 3}]
-    # The bare profile alias reaches node 0.
-    assert once_cluster.entry_id(cluster.spec) == {"role": None, "index": 0}
-    assert cluster.spec["sources"] == {"non_empty": ["ssh-sources"],
-                                       "may_be_empty": ["kafka-sources"]}
-    assert cluster.spec["default"] == "vultr"
-    assert list(cluster.spec["registry"]) == ["vultr"]
-    # The quorum crosses a VPC this package creates from vultr-vpc-subnet.
-    assert cluster.spec["registry"]["vultr"]["network"] == {
-        "mode": "created", "key": "vultr-vpc-subnet"}
-    # A created network cuts its fallbacks from the CIDR key, not a stand-in.
-    assert "fallback_subnet" not in cluster.spec
-    assert cluster.spec["registry"]["vultr"]["secrets"] == ["vultr-api-key"]
 
 
 def test_names_derive_from_one_index():

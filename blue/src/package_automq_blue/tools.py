@@ -10,8 +10,8 @@ from blue.ansible import ansible_with_spec
 from blue.cli import stage_dir
 from blue.runtime import runtime
 from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
-from package_once_blue import compute as once_compute
-from package_once_blue import compute_cluster as once_cluster
+from colors_compute.orchestration import orchestrate
+from colors_compute.planning import plan_deployment
 from package_once_blue.utils import registrable_domain
 
 from . import cluster, ssh_config, validate
@@ -42,9 +42,8 @@ def raw_spec(target: str, content: str) -> dict:
     return content_spec(target, content)
 
 
-# A source list as desired state or an overlay string carries it. ONCE's, so
 # the validator and the templates can never disagree about what an entry is.
-cidrs = once_compute.cidrs
+
 
 
 def credential_env(opts: dict, *slots: str) -> dict[str, str] | None:
@@ -63,70 +62,31 @@ def backend_credential_env(opts: dict) -> dict[str, str] | None:
     return credential_env(opts)
 
 
-async def state_output(opts: dict):
-    """The reader ONCE's `read_state` takes: the recorded `params` map with the
-    underscores kept (`ssh_key_id`, `vpc_ip`), or None when the state is
-    readable and holds no compute. This package's pre-adoption states already
-    recorded `params` in this shape, only without `provider`, which the Compute
-    Provider Standard reads as the default provider — so there is no legacy
-    translation. An unreadable backend is whatever `blue.tofu` raises — the
-    SDK's `StepError` — deliberately uncaught: `read_state` turns it into
-    `{"error": message}`, and create and delete treat that differently. Looked
-    up on this module at call time, so tests can replace it."""
-    outputs = await tofu.outputs(tool_dir(opts, infrastructure_tool),
-                                 backend_credential_env(opts))
-    return (outputs or {}).get("params")
+def nodes(opts):
+    return cluster.nodes(opts, opts.get('colors-compute/cluster'))
 
 
-def nodes(opts: dict) -> list[dict]:
-    """The cluster's nodes for every later stage: the recorded cluster under
-    `once/cluster` on a real run, ONCE's fallbacks on a build."""
-    return cluster.nodes(opts, opts.get("once/cluster"))
-
-
-# ------------------------------------------------------------------ compute
-
-
-def infrastructure_data(opts: dict) -> dict:
-    return {**opts,
-            "ssh-keygen": validate.keygen(opts),
-            "node-count": cluster.node_count(opts),
-            "compute-name": cluster.compute_name(opts),
-            # The firewall rule renders this. A template key that is absent
-            # renders as empty rather than failing, so omitting it produced
-            # `port = ""` — which survives build, golden, dry-run and validate,
-            # and is rejected only by the provider on a real apply.
-            "kafka-port": cluster.kafka_port(opts),
-            # The quorum and inter-broker ports are opened to the VPC subnet
-            # only — see the firewall comment in main.tf for why that rule has
-            # to exist at all.
-            "controller-port": cluster.controller_port(opts),
-            "internal-port": cluster.internal_port(opts),
-            "ssh-sources-hcl": tofu.hcl_list(cidrs(opts, "vultr-ssh-sources")),
-            "kafka-sources-hcl": tofu.hcl_list(cidrs(opts, "vultr-kafka-sources"))}
-
-
-def resolved_cluster(opts: dict, result: dict) -> dict:
-    """The applied compute stage's `params`, adopted under `once/cluster` for
-    the stages that follow — or ONCE's refusal: no `params` output at all, or a
-    node set that is partial, undeclared, duplicated or incomplete, exits 1
-    rather than rendering a quorum string against the documentation
-    addresses."""
-    return once_cluster.resolved_cluster(cluster.spec, opts, result, {},
-                                         once_cluster.output_params(result))
-
-
-async def infrastructure_step(opts: dict) -> dict:
-    dir = tool_dir(opts, infrastructure_tool)
-    specs = [spec(template("infrastructure", "main.tf"), f"{dir}/main.tf",
-                  infrastructure_data(opts))]
-    result = await tofu.tofu_with_spec(
-        opts, specs, dir=dir, env=credential_env(opts, "provider-compute"))
-    if (result.get("blue/exit") or 0) > 0:
-        return result
-    if opts.get("blue/event") in ("build", "delete"):
-        return result
-    return resolved_cluster(opts, result)
+async def infrastructure_step(opts):
+    planning = opts.get('blue/event') == 'build' or opts.get('blue/dry-run')
+    if planning:
+        result = plan_deployment(opts, cluster.topology(opts), cluster.requirements(opts))
+        directory = tool_dir(opts, infrastructure_tool)
+        for stage, documents in [('shared', result['documents']['shared']), *[(f'nodes/{node}', docs) for node, docs in result['documents']['nodes'].items()]]:
+            for filename, document in documents.items():
+                target = Path(directory) / stage / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(document, sort_keys=True, indent=2) + '\n')
+    else:
+        result = await orchestrate(opts, cluster.topology(opts), cluster.requirements(opts))
+    if result['status'] not in ('ready', 'planned', 'destroyed'):
+        return {**opts, 'blue/exit': 1, 'blue/err': '\n'.join(result.get('errors', [])) or 'compute lifecycle refused; inspect state ownership and configuration'}
+    values = {**opts, 'blue/exit': 0}
+    if 'cluster' in result:
+        values['colors-compute/cluster'] = result['cluster']
+    path = result.get('key', {}).get('private_key_path')
+    if path:
+        values['ssh-private-key-path'] = path.replace('$HOME/.ssh', '/home/build-placeholder/.ssh') if planning else path
+    return values
 
 
 # ---------------------------------------------------------------------- dns
@@ -181,8 +141,8 @@ def ansible_local_data(opts: dict) -> dict:
     reach the play as extra-vars instead, so the rendered playbook carries no IP
     and is identical on every workstation (SSH Config Standard §6)."""
     return {**opts,
-            "ssh-keygen": validate.keygen(opts),
-            "ssh-config-identity-file": ssh_config.identity_file(opts),
+            "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
+            "ssh-config-identity-file": ssh_config.identity_file(opts) if validate.keygen(opts) else opts.get("ssh-private-key-path", ""),
             "host-alias": ssh_config.host_alias(opts)}
 
 
@@ -194,10 +154,8 @@ def ansible_local_specs(opts: dict) -> list[dict]:
 
 
 def ssh_config_hosts(opts: dict, nodes_: list[dict]) -> list[dict]:
-    """The `~/.ssh/config` entries, as data the play loops over: the bare
-    profile pointing at node 0 (the spec's entry), then one alias per node.
-    ONCE's (Compute Cluster Standard §6)."""
-    return once_cluster.ssh_config_hosts(cluster.spec, opts, nodes_)
+    """Use normalized library results for application rendering."""
+    return [{**nodes_[0], 'name': opts['profile']}, *[{**node, 'name': opts['profile'] + '-' + str(node['index'])} for node in nodes_]]
 
 
 async def ansible_local_step(opts: dict) -> dict:
@@ -256,7 +214,7 @@ def inventory(opts: dict, nodes_: list[dict]) -> str:
                 # Node 0 is the only ACME client and the only host that receives
                 # the zone-editing token.
                 "automq_cert_issuer": n["index"] == 0}
-        if validate.keygen(opts):
+        if opts.get("ssh-private-key-path"):
             host["ansible_ssh_private_key_file"] = opts.get("ssh-private-key-path")
         hosts[str(n["name"])] = dict(sorted(host.items()))
     return _pretty({"all": {"children": {"automq": {
@@ -275,7 +233,7 @@ def ansible_data(opts: dict) -> dict:
     in this map."""
     nodes_ = nodes(opts)
     return {**opts,
-            "ssh-keygen": validate.keygen(opts),
+            "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
             "node-count": cluster.node_count(opts),
             "quorum-voters": cluster.quorum_voters(opts, nodes_),
             "certificate-names": cluster.certificate_names(opts),
@@ -315,12 +273,12 @@ def ansible_specs(opts: dict) -> list[dict]:
 
 async def ansible_step(opts: dict) -> dict:
     dir = tool_dir(opts, ansible_tool)
-    if opts.get("blue/event") == "delete" and opts.get("once/cluster") is None:
+    if opts.get("blue/event") == "delete" and opts.get("colors-compute/cluster") is None:
         # A readable state without compute: there is nothing to stop, and the
         # cleanup play would only fail against the placeholder addresses. (An
         # unreadable state, or a partial one, never reaches here — the delete
         # failed closed at adoption.)
-        return {**opts, "blue/exit": 0}
+        return {**opts, "blue/exit": 1, "blue/err": "compute inventory unavailable"}
     return await ansible_with_spec(
         opts, ansible_specs(opts),
         dir=dir, inventory="inventory.json",

@@ -45,7 +45,7 @@
           {% for host in ssh_hosts %}
           Host {{ host.name }}
               HostName {{ host.ip }}
-              User root
+              User {{ host.user }}
               Port 22
               IdentityFile ~/.ssh/automq-fixture
               IdentitiesOnly yes

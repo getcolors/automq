@@ -1,74 +1,36 @@
-"""Everything that turns ``automq-node-count`` into concrete cluster facts.
-
-This module exists because a three-node cluster has far more derived identity
-than a single-node one, and every derivation is a place to be wrong in a way no
-exit code reports: a broker that advertises the wrong name is reachable and
-useless, a quorum string that disagrees between nodes forms no quorum at all,
-and a certificate whose SAN list misses one broker fails only for the client
-that happens to be routed there.
-
-The node set itself — how many nodes, their ids, the fallback addresses a
-``build`` renders with, and the refusal of a state that does not describe the
-whole cluster — is the Compute Cluster Standard's
-(``workspace/standards/compute-cluster.md``) and is ONCE's ``compute_cluster``
-module, called with the ``spec`` below and never copied. What stays here is
-AutoMQ's: broker names, the SAN list, the quorum string, listeners, principals
-and ACLs.
-
-Everything here is a pure function of desired state plus the compute stage's
-outputs, so the whole of it is reachable from the test suite and visible in the
-goldens. Nothing in this file may read the environment, the filesystem, or the
-network.
-"""
+"""AutoMQ application facts built from the shared compute contract."""
 
 from __future__ import annotations
 
-from package_once_blue import compute as once_compute
-from package_once_blue import compute_cluster as once_cluster
-
-# ---------------------------------------------------------------- the spec
-
-# provider-compute -> what that choice implies.
-#
-# `required` are the non-secret keys the provider's template interpolates,
-# `secrets` the credentials it needs through COLORS_PAR_*, `tofu-env` the
-# subset OpenTofu reads from the process environment itself, and `network` the
-# private network the cluster's quorum crosses — created by this package from
-# `vultr-vpc-subnet`, never discovered. Keeping them together is what stops a
-# provider being validated against one set of keys and run with another. The
-# keys of this map are the advertised providers; Vultr is the only one this
-# package has a template and a golden for.
-#
-# Two keys the template reads are deliberately not required. `vultr-name` is
-# an optional override of the profile (Compute Name Standard), and
-# `vultr-ssh-keys` is meaningful by its absence (SSH Keypair Standard).
-compute_providers: once_cluster.ClusterRegistry = {
-    "vultr": {
-        "required": ["vultr-region", "vultr-plan", "vultr-os-id", "vultr-vpc-subnet",
-                     "vultr-ssh-sources", "vultr-kafka-sources"],
-        "secrets": ["vultr-api-key"],
-        "tofu-env": {"vultr-api-key": "VULTR_API_KEY"},
-        "network": {"mode": "created", "key": "vultr-vpc-subnet"},
-    },
-}
-
-# The provider a deployment created before this package recorded one in its
-# compute output must be running: the only one it ever offered.
-default_compute_provider = "vultr"
+from colors_compute import collect, expand
+from colors_compute.deployment_request import deployment_requests, source_cidrs
+from colors_compute.planning import plan_deployment
 
 DEFAULT_NODE_COUNT = 3
+default_compute_provider = 'vultr'
 
-# How this package describes itself to ONCE's `compute_cluster`. One
-# homogeneous role whose count is `automq-node-count` (three by default); the
-# bare `<profile>` alias reaches node 0, the default entry. `sources` names the
-# firewall lists the template reads — SSH must list at least one CIDR, an empty
-# Kafka list means no public Kafka access.
-spec: once_cluster.ClusterSpec = {
-    "registry": compute_providers,
-    "default": default_compute_provider,
-    "sources": {"non_empty": ["ssh-sources"], "may_be_empty": ["kafka-sources"]},
-    "roles": [{"role": None, "count_key": "automq-node-count", "count": DEFAULT_NODE_COUNT}],
-}
+
+def topology(opts):
+    return [{'role': None, 'count': opts.get('automq-node-count', DEFAULT_NODE_COUNT)}]
+
+
+def _sources(opts, name):
+    return source_cidrs(opts, name, 'automq-' + name)
+
+
+def requirements(opts):
+    ingress = [{'id': 'ssh', 'protocol': 'tcp', 'from_port': 22, 'to_port': 22, 'sources': _sources(opts, 'ssh-sources')}]
+    kafka = _sources(opts, 'kafka-sources')
+    if kafka:
+        ingress.append({'id': 'kafka', 'protocol': 'tcp', 'from_port': kafka_port(opts), 'to_port': kafka_port(opts), 'sources': kafka})
+    for name, port in [('controller', controller_port(opts)), ('internal', internal_port(opts))]:
+        ingress.append({'id': name, 'protocol': 'tcp', 'from_port': port, 'to_port': port, 'sources': ['private']})
+    return {'security': {'ingress': ingress, 'egress': 'all', 'private_filter': True},
+            'private': True, 'legacy_state_keys': [str(opts.get('profile')) + '/automq-infrastructure.tfstate']}
+
+
+def _requests(opts):
+    return deployment_requests(opts, topology(opts), requirements(opts), {'mode': 'managed', 'public_key': 'ssh-ed25519 PLACEHOLDER managed-by-colors'})
 
 
 def _s(value) -> str:
@@ -84,18 +46,13 @@ def _s(value) -> str:
 
 
 def node_count(opts: dict) -> int:
-    """How many nodes the cluster has: ``automq-node-count`` when desired
-    state carries it, else three. ONCE's; validation refuses a present value
-    that is not a positive integer before any derivation runs."""
-    return once_cluster.node_count(spec, opts, None)
+    """Use normalized library results for application rendering."""
+    return topology(opts)[0]['count']
 
 
 def indexes(opts: dict) -> list[int]:
-    """Node indexes, ``0..n-1``. The index is the KRaft ``node.id``, the suffix
-    in the machine label, and the ordinal in the broker name: one number, so the
-    three can never disagree. ONCE's ids are 0-based per role, which is what
-    keeps ``node.id = index`` true."""
-    return [id["index"] for id in once_cluster.node_ids(spec, opts)]
+    """Use normalized library results for application rendering."""
+    return [node["index"] for node in expand(topology(opts))]
 
 
 def broker_name(opts: dict, i: int) -> str:
@@ -124,10 +81,8 @@ def certificate_names(opts: dict) -> list[str]:
 
 
 def compute_name(opts: dict) -> str:
-    """The cluster's base machine name (Compute Name Standard §1-2): the
-    profile, unless desired state overrides it with ``vultr-name``. ONCE's, so
-    every label derives from the same value."""
-    return once_compute.compute_name(opts)
+    """Use normalized library results for application rendering."""
+    return _requests(opts)['shared']['name']
 
 
 def machine_name(opts: dict, i: int) -> str:
@@ -136,7 +91,7 @@ def machine_name(opts: dict, i: int) -> str:
     labels the instance. Numbered because there is more than one; the standard
     names the machine after the profile, and the index disambiguates without
     introducing a second naming scheme."""
-    return once_cluster.fallback_node_name(spec, opts, {"role": None, "index": i})
+    return _requests(opts)['nodes'][i]['name']
 
 
 def machine_names(opts: dict) -> list[str]:
@@ -147,10 +102,7 @@ def machine_names(opts: dict) -> list[str]:
 
 
 def _automq_node(opts: dict, node: dict) -> dict:
-    """One of ONCE's nodes as this package's renderers read it: ``vpc-ip`` in
-    the package's kebab spelling — the templates, the inventory and the quorum
-    string were written against it, and adapting here keeps every rendered
-    file byte-identical — plus the broker name this node advertises."""
+    """Use normalized library results for application rendering."""
     result = {k: v for k, v in node.items() if k != "vpc_ip"}
     result["vpc-ip"] = node.get("vpc_ip")
     result["broker-name"] = broker_name(opts, node["index"])
@@ -158,23 +110,21 @@ def _automq_node(opts: dict, node: dict) -> dict:
 
 
 def fallback_nodes(opts: dict) -> list[dict]:
-    """What a credential-free `build` renders in place of a compute output:
-    ONCE's fallbacks — public addresses from ``192.0.2.0/24``, private ones cut
-    from ``vultr-vpc-subnet``, offset 10 — so a build is byte-identical on every
-    workstation and the committed goldens mean something."""
-    return [_automq_node(opts, n) for n in once_cluster.fallback_nodes(spec, opts)]
+    """Use normalized library results for application rendering."""
+    return [_automq_node(opts, n) for n in plan_deployment(opts, topology(opts), requirements(opts))['cluster']['nodes']]
 
 
 def nodes(opts: dict, params=None) -> list[dict]:
-    """The node list the Ansible stage and the templates consume.
-
-    ``params`` is the compute stage's recorded ``params`` map, adopted under
-    ``once/cluster`` on a real run. On a build there is none, so the fallbacks
-    stand in. On a real run ONCE refuses a state that does not describe every
-    declared node with every field, and never substitutes a fallback:
-    rendering a two-voter quorum string for a three-node cluster would produce
-    a cluster that starts and then cannot elect."""
-    return [_automq_node(opts, n) for n in once_cluster.nodes(spec, opts, params)]
+    """Use normalized library results for application rendering."""
+    recorded = params or opts.get('colors-compute/cluster')
+    if recorded is None:
+        if opts.get('blue/event') == 'build' or opts.get('blue/dry-run'):
+            return fallback_nodes(opts)
+        raise ValueError('compute cluster unavailable; refusing placeholder inventory')
+    declarations = recorded.get('nodes', []) if opts.get('blue/event') == 'delete' else expand(topology(opts))
+    requests = [{**node, 'private': True, 'provider': opts['provider-compute']} for node in declarations]
+    checked = collect(requests, recorded.get('nodes', []), requests[0]['node_id'])
+    return [_automq_node(opts, n) for n in checked['nodes']]
 
 
 # ----------------------------------------------------------------- listeners

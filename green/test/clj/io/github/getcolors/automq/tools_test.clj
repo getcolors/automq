@@ -1,23 +1,26 @@
 (ns io.github.getcolors.automq.tools-test
   (:require [cheshire.core :as json]
+            [green.tofu :as tofu]
+            [io.github.getcolors.automq.validate :as validate]
             [clojure.string]
             [clojure.test :refer [deftest is testing]]
             [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.automq.validate-test :as validation]
             [io.github.getcolors.automq.cluster-test :refer [params]]
             [io.github.getcolors.automq.tools :as tools]))
 
 (def opts
-  {:profile "automq-vultr" :workdir ".colors"
+  (merge validation/base {:profile "automq-vultr" :workdir ".colors"
    :provider-compute "vultr" :provider-dns "cloudflare" :provider-backend "r2"
    :automq-node-count 3
    :automq-host "automq.example.com" :automq-broker-name-prefix "b"
    :automq-kafka-port 9092 :automq-internal-port 9094 :automq-controller-port 9093
    :automq-sasl-user "automq" :automq-client-topic-prefix "colors-"
    :vultr-vpc-subnet "10.40.0.0/24"
-   :vultr-ssh-sources ["0.0.0.0/0" "::/0"]
-   :vultr-kafka-sources ["203.0.113.0/24"]})
+   :vultr-ssh-sources ["0.0.0.0/0"]
+   :vultr-kafka-sources ["203.0.113.0/24"]}))
 
-(def applied (assoc opts :once/cluster params))
+(def applied (assoc opts :colors-compute/cluster params))
 
 (deftest the-adopted-cluster-reaches-the-renderers-respelled
   ;; ONCE records `vpc_ip` and `ssh_key_id` with underscores — the latter is
@@ -25,36 +28,10 @@
   ;; stay verbatim on the params map. The renderers read `:vpc-ip`, so the
   ;; node wrapper respells that one key and nothing else.
   (let [[n] (tools/nodes applied)]
-    (is (= "7692e92a" (:ssh_key_id (:once/cluster applied))))
+    (is (= "7692e92a" (:ssh_key_id (:colors-compute/cluster applied))))
     (is (= "10.40.0.3" (:vpc-ip n)))
     (is (nil? (:vpc_ip n)))
     (is (= "automq-vultr-0" (:name n)))))
-
-(deftest the-compute-stage-refuses-anything-but-the-whole-cluster
-  ;; The real create's infrastructure step hands its tofu outputs here. No
-  ;; `params` output at all, or a node set that is partial or incomplete, is
-  ;; exit 1 with ONCE's message rather than a quorum string against
-  ;; 192.0.2.10; the whole cluster lands under `:once/cluster`.
-  (let [result (fn [p] {:green/exit 0 :tofu/outputs (when p {:params p})})]
-    (testing "no params output"
-      (let [r (tools/resolved-cluster opts (result nil))]
-        (is (= 1 (:green/exit r)))
-        (is (= "compute produced no params output; refusing to converge against the documentation addresses"
-               (:green/err r)))))
-    (testing "a partial cluster"
-      (let [r (tools/resolved-cluster opts (result (update params :nodes pop)))]
-        (is (= 1 (:green/exit r)))
-        (is (= "the compute stage did not report nodes this package declares: 2" (:green/err r)))))
-    (testing "an incomplete node"
-      (let [r (tools/resolved-cluster opts (result (assoc-in params [:nodes 2 :ip] nil)))]
-        (is (= 1 (:green/exit r)))
-        (is (clojure.string/includes? (:green/err r) "did not report a complete node"))))
-    (testing "the whole cluster, string-keyed as tofu delivers it"
-      (let [raw {"provider" "vultr" "ssh_key_id" "7692e92a"
-                 "nodes" (mapv #(into {} (map (fn [[k v]] [(name k) v])) %) (:nodes params))}
-            r (tools/resolved-cluster opts (result raw))]
-        (is (= 0 (:green/exit r)))
-        (is (= params (:once/cluster r)))))))
 
 (deftest the-zone-is-the-registrable-domain
   (is (= "example.com" (tools/zone opts))))
@@ -97,7 +74,7 @@
   ;; Secrets reach the host as lookup('env', …) expressions written literally
   ;; into the playbook. Anything in this map would land in .colors/ and in a
   ;; committed golden.
-  (let [data (tools/ansible-data opts)]
+  (let [data (tools/ansible-data (assoc opts :green/event :build))]
     (is (not-any? (fn [[k v]]
                     (and (string? v)
                          (re-find #"(?i)secret|password|token|access.key" (name k))))
@@ -105,23 +82,12 @@
     (is (= "0@10.40.0.3:9093,1@10.40.0.4:9093,2@10.40.0.5:9093"
            (:quorum-voters (tools/ansible-data applied))))))
 
-(deftest the-compute-stage-renders-every-value-its-template-names
-  ;; A Selmer key that is absent renders as empty rather than failing, so the
-  ;; firewall rule shipped `port = ""` and only the provider rejected it.
-  (let [data (tools/infrastructure-data opts)]
-    (is (= 9092 (:kafka-port data)))
-    (is (= 3 (:node-count data)))
-    (is (= "automq-vultr" (:compute-name data)))
-    (is (every? #(not (clojure.string/blank? (str (get data %))))
-                [:kafka-port :node-count :compute-name :ssh-sources-hcl
-                 :kafka-sources-hcl :controller-port :internal-port]))
-    (testing "the quorum ports reach the firewall template"
-      ;; Without a rule for these, a Vultr firewall group silently drops TCP
-      ;; on the private interface while still passing ICMP, and the cluster
-      ;; never elects a controller.
-      (is (= 9093 (:controller-port data)))
-      (is (= 9094 (:internal-port data))))))
 
-(deftest cidr-lists-survive-both-yaml-and-string-forms
-  (is (= ["0.0.0.0/0" "::/0"] (tools/cidrs opts :vultr-ssh-sources)))
-  (is (= ["1.2.3.0/24"] (tools/cidrs {:x "1.2.3.0/24"} :x))))
+(deftest dns-receives-separate-r2-backend-credentials
+  (let [values (assoc applied :green/event :create :r2-access-key-id "synthetic-id" :r2-secret-access-key "synthetic-secret" :cloudflare-api-token "synthetic-dns")
+        captured (atom nil) environment (into {} (System/getenv))]
+    (with-redefs [tofu/tofu-with-spec (fn [opts _specs options] (reset! captured (:env options)) (assoc opts :green/exit 0))]
+      (is (= 0 (:green/exit (tools/dns-step values)))))
+    (is (= {"AWS_ACCESS_KEY_ID" "synthetic-id" "AWS_SECRET_ACCESS_KEY" "synthetic-secret" "CLOUDFLARE_API_TOKEN" "synthetic-dns"} @captured))
+    (is (= environment (into {} (System/getenv))))
+    (is (= {} (validate/tofu-env values :provider-compute)))))

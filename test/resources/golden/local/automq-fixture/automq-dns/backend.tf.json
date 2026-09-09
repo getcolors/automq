@@ -1,7 +1,19 @@
 {
   "terraform" : {
     "backend" : {
-      "local" : { }
+      "s3" : {
+        "bucket" : "fixture-state",
+        "endpoints" : {
+          "s3" : "https://fixture.r2.cloudflarestorage.com"
+        },
+        "key" : "automq-fixture/automq-dns.tfstate",
+        "region" : "auto",
+        "skip_credentials_validation" : true,
+        "skip_metadata_api_check" : true,
+        "skip_region_validation" : true,
+        "skip_requesting_account_id" : true,
+        "use_path_style" : false
+      }
     }
   }
 }

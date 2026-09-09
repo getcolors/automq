@@ -6,12 +6,15 @@ import { PRESERVE_JINJA_DELIMITERS, contentSpec, scaffold, type Spec, type Templ
 import * as tofu from "red/tofu";
 import { runtime } from "red/runtime";
 import { failed, type Opts } from "red/workflow";
-import { compute, computeCluster, registrableDomain } from "package-once-red";
+import {registrableDomain} from "package-once-red";
+import {orchestrate,plan_deployment} from "colors-compute-red";
+import {mkdirSync,writeFileSync} from "node:fs";
+import {dirname} from "node:path";
 import * as cluster from "./cluster.ts";
 import * as sshConfig from "./ssh-config.ts";
 import * as validate from "./validate.ts";
 
-import infrastructureMainTf from "../resources/tools/infrastructure/main.tf" with { type: "text" };
+
 import dnsMainTf from "../resources/tools/dns/main.tf" with { type: "text" };
 import ansibleLocalCfg from "../resources/tools/ansible-local/ansible.cfg" with { type: "text" };
 import ansibleLocalInventory from "../resources/tools/ansible-local/inventory.ini" with { type: "text" };
@@ -58,10 +61,6 @@ function spec(source: Template, target: string, data: Opts): Spec {
 
 const rawSpec = (target: string, content: string): Spec => contentSpec(target, content);
 
-// A source list as desired state or an overlay string carries it. ONCE's, so
-// the validator and the templates can never disagree about what an entry is.
-export const cidrs = compute.cidrs;
-
 export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, string> | undefined {
   const mapping: Record<string, string> = Object.assign(
     {},
@@ -77,68 +76,19 @@ export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, st
 
 export const backendCredentialEnv = (opts: Opts) => credentialEnv(opts);
 
-// The reader ONCE's `readState` takes: the recorded `params` map with the
-// underscores kept (`ssh_key_id`, `vpc_ip`), or undefined when the state is
-// readable and holds no compute. This package's pre-adoption states already
-// recorded `params` in this shape, only without `provider`, which the Compute
-// Provider Standard reads as the default provider — so there is no legacy
-// translation. An unreadable backend is whatever `red/tofu` throws — the SDK's
-// `StepError` — deliberately uncaught: `readState` turns it into `{ error }`,
-// and create and delete treat that differently. Injectable into `startStep`,
-// so tests never shell out to tofu.
-export async function stateOutput(opts: Opts): Promise<compute.Params | undefined> {
-  const outputs = await tofu.outputs(toolDir(opts, infrastructureTool), backendCredentialEnv(opts));
-  const params = outputs.params;
-  return params && typeof params === "object" ? params as compute.Params : undefined;
-}
-
-// The cluster's nodes for every later stage: the recorded cluster under
-// `once/cluster` on a real run, ONCE's fallbacks on a build.
-export function nodes(opts: Opts): cluster.Node[] {
-  return cluster.nodes(opts, opts["once/cluster"] as computeCluster.ClusterParams | undefined);
-}
-
-// ------------------------------------------------------------------ compute
-
-export function infrastructureData(opts: Opts): Opts {
-  return {
-    ...opts,
-    "ssh-keygen": validate.keygen(opts),
-    "node-count": cluster.nodeCount(opts),
-    "compute-name": cluster.computeName(opts),
-    // The firewall rule renders this. A template key that is absent renders as
-    // empty rather than failing, so omitting it produced `port = ""` — which
-    // survives build, golden, dry-run and validate, and is rejected only by the
-    // provider on a real apply.
-    "kafka-port": cluster.kafkaPort(opts),
-    // The quorum and inter-broker ports are opened to the VPC subnet only — see
-    // the firewall comment in main.tf for why that rule has to exist at all.
-    "controller-port": cluster.controllerPort(opts),
-    "internal-port": cluster.internalPort(opts),
-    "ssh-sources-hcl": tofu.hclList(cidrs(opts, "vultr-ssh-sources")),
-    "kafka-sources-hcl": tofu.hclList(cidrs(opts, "vultr-kafka-sources")),
-  };
-}
-
-// The applied compute stage's `params`, adopted under `once/cluster` for the
-// stages that follow — or ONCE's refusal: no `params` output at all, or a node
-// set that is partial, undeclared, duplicated or incomplete, exits 1 rather
-// than rendering a quorum string against the documentation addresses.
-export function resolvedCluster(opts: Opts, result: Opts): Opts {
-  return computeCluster.resolvedCluster(cluster.spec, opts, result, {},
-    computeCluster.outputParams(result));
-}
-
-export async function infrastructureStep(opts: Opts): Promise<Opts> {
-  const dir = toolDir(opts, infrastructureTool);
-  const specs = [spec(template("infrastructure/main.tf", infrastructureMainTf),
-                      `${dir}/main.tf`, infrastructureData(opts))];
-  const result = await tofu.tofuWithSpec(opts, specs,
-    { dir, env: credentialEnv(opts, "provider-compute") });
-  if (failed(result)) return result;
-  if (opts["red/event"] === "build") return result;
-  if (opts["red/event"] === "delete") return result;
-  return resolvedCluster(opts, result);
+export const nodes=(opts:Opts):cluster.Node[]=>cluster.nodes(opts,opts['colors-compute/cluster']);
+export async function infrastructureStep(opts:Opts):Promise<Opts>{
+ const planning=opts['red/event']==='build'||opts['red/dry-run'];
+ const result:any=planning?plan_deployment(opts,cluster.topology(opts),cluster.requirements(opts)):await orchestrate(opts,cluster.topology(opts),cluster.requirements(opts));
+ if(planning){
+  const sorted=(v:any):any=>Array.isArray(v)?v.map(sorted):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sorted(v[k])])):v;
+  for(const [stage,docs] of [['shared',result.documents.shared],...Object.entries(result.documents.nodes).map(([id,docs])=>['nodes/'+id,docs])] as [string,Record<string,any>][])
+   for(const [filename,document] of Object.entries(docs)){const target=toolDir(opts,infrastructureTool)+'/'+stage+'/'+filename;mkdirSync(dirname(target),{recursive:true});writeFileSync(target,JSON.stringify(sorted(document),null,2)+'\n');}
+ }
+ if(!['ready','planned','destroyed'].includes(result.status))return {...opts,'red/exit':1,'red/err':result.errors?.join('\n')||'compute lifecycle refused; inspect state ownership and configuration'};
+ const values:Opts={...opts,'red/exit':0};if(result.cluster)values['colors-compute/cluster']=result.cluster;
+ if(result.key?.private_key_path)values['ssh-private-key-path']=planning?result.key.private_key_path.replace('$HOME/.ssh','/home/build-placeholder/.ssh'):result.key.private_key_path;
+ return values;
 }
 
 // ---------------------------------------------------------------------- dns
@@ -194,8 +144,8 @@ export async function dnsStep(opts: Opts): Promise<Opts> {
 export function ansibleLocalData(opts: Opts): Opts {
   return {
     ...opts,
-    "ssh-keygen": validate.keygen(opts),
-    "ssh-config-identity-file": sshConfig.identityFile(opts),
+    "ssh-keygen": validate.keygen(opts) || Boolean(opts["ssh-private-key-path"]),
+    "ssh-config-identity-file": validate.keygen(opts) ? sshConfig.identityFile(opts) : opts["ssh-private-key-path"] || "",
     "host-alias": sshConfig.hostAlias(opts),
   };
 }
@@ -211,11 +161,8 @@ export function ansibleLocalSpecs(opts: Opts): Spec[] {
 }
 
 // The `~/.ssh/config` entries, as data the play loops over: the bare profile
-// pointing at node 0 (the spec's entry), then one alias per node. ONCE's
-// (Compute Cluster Standard §6).
-export function sshConfigHosts(opts: Opts, list: cluster.Node[]): computeCluster.SshConfigHost[] {
-  return computeCluster.sshConfigHosts(cluster.spec, opts, list);
-}
+// pointing at node zero, followed by one alias per normalized node.
+export function sshConfigHosts(opts:Opts,list:cluster.Node[]){return [{...list[0],name:opts.profile},...list.map(node=>({...node,name:opts.profile+'-'+node.index}))];}
 
 // Write or remove the `~/.ssh/config` block. The same playbook serves both
 // events; `block_state` is what distinguishes them.
@@ -303,7 +250,7 @@ export function ansibleData(opts: Opts): Opts {
   const list = nodes(opts);
   return {
     ...opts,
-    "ssh-keygen": validate.keygen(opts),
+    "ssh-keygen": validate.keygen(opts) || Boolean(opts["ssh-private-key-path"]),
     "node-count": cluster.nodeCount(opts),
     "quorum-voters": cluster.quorumVoters(opts, list),
     "certificate-names": cluster.certificateNames(opts),
@@ -361,7 +308,7 @@ export function ansibleSpecs(opts: Opts): Spec[] {
 
 export async function ansibleStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, ansibleTool);
-  if (opts["red/event"] === "delete" && opts["once/cluster"] == null) {
+  if (opts["red/event"] === "delete" && opts["colors-compute/cluster"] == null) {
     // A readable state without compute: there is nothing to stop, and the
     // cleanup play would only fail against the placeholder addresses. (An
     // unreadable state, or a partial one, never reaches here — the delete

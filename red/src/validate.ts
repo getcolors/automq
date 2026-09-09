@@ -1,15 +1,16 @@
-// Desired-state, credential, tool, and Vultr validation.
+// Application requirements and delegated compute validation.
 //
 // Green renders its keys as Clojure keywords, so every message here carries the
 // same leading colon — the three colours must report identical errors for one
 // colors.yml.
 
+import {providers as onceProviders} from "package-once-red";
 import { parName } from "red/cli";
 import { runtime, type ExecResult } from "red/runtime";
 import type { Opts } from "red/workflow";
-import { compute, computeCluster, providers } from "package-once-red";
+import {registry,validate as computeValidate,credential_requirements,plan_deployment,keyMode} from "colors-compute-red";
 import * as cluster from "./cluster.ts";
-import { onceSsh } from "./once.ts";
+
 
 export const profilePar = parName("profile");
 
@@ -17,9 +18,9 @@ export const profilePar = parName("profile");
 // needs and which this module already depends on for the principals; they are
 // named here too so the lifecycle reads them from the validator, as the other
 // delegating packages do.
-export const computeProviders = cluster.computeProviders;
+export const computeProviders = registry.compute;
 export const defaultComputeProvider = cluster.defaultComputeProvider;
-export const spec = cluster.spec;
+
 
 // Every key desired state must carry whichever provider is selected. The
 // provider-scoped keys come from `computeProviders`.
@@ -63,10 +64,9 @@ function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value);
 }
 
-// Whether this deployment owns its machine keypair. Delegates to ONCE, the
-// standard's reference implementation, so one rule decides it everywhere.
+// The compute library decides whether the deployment owns its machine key.
 export function keygen(opts: Opts): boolean {
-  return onceSsh.keygen(opts);
+  return keyMode(opts).mode==='managed';
 }
 
 export function envErrors(env: Record<string, string | undefined>): string[] {
@@ -79,18 +79,15 @@ function port(value: unknown): boolean {
   return isInteger(value) && value >= 1 && value <= 65535;
 }
 
-// Every problem with desired state at once: the missing keys (this package's
-// and the selected provider's), the package's own checks, then the Compute
-// Cluster Standard's — selection, the source lists, the provider rules, the
-// created network's CIDR and the topology — which are ONCE's over `spec`.
+// Application checks run alongside the shared provider and rendering contracts.
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
-  for (const key of [...required, ...compute.requiredKeys(spec, opts)]) {
+  for (const key of required) {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
   if (opts["provider-dns"] !== "cloudflare") errors.push(":provider-dns must be cloudflare");
-  if (!["local", "s3", "r2"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be local, s3, or r2");
+  if (!["s3", "r2"].includes(String(opts["provider-backend"]))) {
+    errors.push(":provider-backend must be s3 or r2");
   }
   // A boolean, not `true`. The guard is lifted for exactly one run by
   // COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
@@ -211,15 +208,13 @@ export function stateErrors(opts: Opts): string[] {
     errors.push(":automq-wal-max-bytes-in-batch must be a positive integer");
   }
 
-  // --- compute: the Compute Cluster Standard's checks are ONCE's over the
-  // spec — selection, the source lists, the Vultr os id and name rules, the
-  // canonical VPC CIDR, and the node count as a positive integer.
-  errors.push(...computeCluster.stateErrors(spec, opts));
+  errors.push(...computeValidate(opts));
+  if(!errors.length)try{plan_deployment(opts,cluster.topology(opts),cluster.requirements(opts));}catch(error){errors.push(String((error as Error).message));}
   return errors;
 }
 
 export function backendSecrets(opts: Opts): string[] {
-  return providers["provider-backend"]?.[String(opts["provider-backend"])]?.secrets ?? [];
+  return (registry.backend as any)[String(opts["provider-backend"])]?.secrets ?? [];
 }
 
 // What talking to Cloudflare needs, on any real event. The compute provider's
@@ -240,7 +235,7 @@ export const applicationSecrets = [
 // lock on the exit.
 export function secretErrors(opts: Opts, event: string): string[] {
   const keys = [...new Set([
-    ...compute.secrets(spec, opts),
+    ...(event==='validate'?credential_requirements(opts).map(name=>name.replace(/^COLORS_PAR_/,'').toLowerCase().replaceAll('_','-')):[]),
     ...dnsSecrets,
     ...(event === "create" ? applicationSecrets : []),
     ...backendSecrets(opts),
@@ -249,22 +244,11 @@ export function secretErrors(opts: Opts, event: string): string[] {
     .map((key) => `required credential is not set: ${parName(key)}`);
 }
 
-export function tofuEnv(opts: Opts, slot: string): Record<string, string> {
-  switch (slot) {
-    case "provider-compute":
-      return compute.tofuEnv(spec, opts);
-    case "provider-dns":
-      return { "cloudflare-api-token": "CLOUDFLARE_API_TOKEN" };
-    case "provider-backend":
-      return providers["provider-backend"]?.[String(opts["provider-backend"])]?.tofuEnv ?? {};
-    default:
-      return {};
-  }
-}
+export function tofuEnv(opts:Opts,slot:string):Record<string,string>{return slot==='provider-dns'?{'cloudflare-api-token':'CLOUDFLARE_API_TOKEN'}:slot==='provider-backend'?(onceProviders['provider-backend']?.[String(opts['provider-backend'])]?.tofuEnv??{}):{};}
 
 // ------------------------------------------------------------ runtime checks
 
-export const requiredTools = ["tofu", "ansible-playbook", "ssh", "curl", "openssl"];
+export const requiredTools = ["tofu", "aws", "ansible-playbook", "ssh", "ssh-keygen", "curl", "openssl"];
 
 export type Runner = (
   cmd: string[],
@@ -276,59 +260,6 @@ async function commandPresent(runner: Runner, command: string): Promise<boolean>
   return result.exit === 0;
 }
 
-export const accountUrl = "https://api.vultr.com/v2/account";
-
-// Turn one probe of the Vultr account endpoint into an error, or undefined.
-//
-// The distinction is the point. A single message covering every non-2xx status
-// reports a Vultr outage as a bad credential and sends the operator off to
-// rotate a key that was never the problem. Only 401 and 403 say anything about
-// the key. A request that never reached the API at all shows up as curl's
-// literal `000`, which is not an HTTP status: that is the operator's network,
-// and naming it saves the same wasted rotation.
-export function apiError(result: { exit: number; out?: string }): string | undefined {
-  const match = /\d{3}$/.exec(String(result.out ?? "").trim());
-  const status = match ? Number(match[0]) : undefined;
-  if (status === undefined || status === 0) {
-    return `could not reach the Vultr API at ${accountUrl} (curl exit ${result.exit}): ` +
-      "this is a local network, DNS, or TLS failure, not a credential problem. " +
-      "Check connectivity and retry.";
-  }
-  if (status >= 200 && status <= 299) return undefined;
-  if (status === 401 || status === 403) {
-    return `Vultr rejected COLORS_PAR_VULTR_API_KEY (HTTP ${status}): the key is ` +
-      "missing, revoked, or its allowed-subnet list does not include this machine. " +
-      "Check the key in the Vultr console and update .envrc.private.";
-  }
-  if (status === 429) {
-    return "Vultr rate-limited the credential check (HTTP 429). The key is valid; " +
-      "wait for the limit to reset and retry.";
-  }
-  if (status >= 500 && status <= 599) {
-    return `the Vultr API returned HTTP ${status} for ${accountUrl}. That is a failure ` +
-      "on Vultr's side, not your credential — do not rotate COLORS_PAR_VULTR_API_KEY. " +
-      "Check https://status.vultr.com and retry.";
-  }
-  return `unexpected HTTP ${status} from ${accountUrl} during the credential check.`;
-}
-
-// Check local tools and authenticate the configured Vultr key. The runner
-// argument keeps command decisions testable without network access.
-export async function runtimeErrors(opts: Opts, runner: Runner = runtime.exec): Promise<string[]> {
-  const present = new Map<string, boolean>();
-  for (const tool of requiredTools) {
-    present.set(tool, await commandPresent(runner, tool));
-  }
-  const errors = requiredTools.filter((tool) => !present.get(tool))
-    .map((tool) => `required tool is not on PATH: ${tool}`);
-  const key = opts["vultr-api-key"];
-  // No `-f`: the status code is the diagnosis, so it has to survive into
-  // stdout instead of collapsing into curl's exit code.
-  const result = !missing(key) && present.get("curl")
-    ? await runner(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-        "--connect-timeout", "10", "--max-time", "20",
-        "-H", `Authorization: Bearer ${key}`, accountUrl], {})
-    : undefined;
-  const probe = result ? apiError(result) : undefined;
-  return probe ? [...errors, probe] : errors;
+export async function runtimeErrors(opts:Opts,runner:Runner=runtime.exec):Promise<string[]> {
+ const errors:string[]=[];for(const tool of requiredTools)if(!await commandPresent(runner,tool))errors.push('required tool is not on PATH: '+tool);return errors;
 }

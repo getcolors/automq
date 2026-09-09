@@ -1,10 +1,10 @@
 (ns io.github.getcolors.automq.cluster-test
   (:require [clojure.test :refer [deftest is testing]]
             [io.github.getcolors.automq.cluster :as cluster]
-            [io.github.getcolors.once.compute-cluster :as once-cluster]))
+            [io.github.getcolors.automq.validate-test :as validation]))
 
 (def opts
-  {:profile "automq-vultr"
+  (merge validation/base {:profile "automq-vultr"
    :provider-compute "vultr"
    :vultr-vpc-subnet "10.40.0.0/24"
    :automq-node-count 3
@@ -12,32 +12,15 @@
    :automq-broker-name-prefix "b"
    :automq-kafka-port 9092
    :automq-internal-port 9094
-   :automq-controller-port 9093})
+   :automq-controller-port 9093}))
 
 ;; The compute stage's recorded `params`, as ONCE reads it: snake_case node
 ;; keys, every field present.
 (def params
   {:provider "vultr" :ssh_key_id "7692e92a"
-   :nodes [{:index 0 :ip "203.0.113.10" :vpc_ip "10.40.0.3" :user "root" :sudoer "root" :name "automq-vultr-0"}
-           {:index 1 :ip "203.0.113.11" :vpc_ip "10.40.0.4" :user "root" :sudoer "root" :name "automq-vultr-1"}
-           {:index 2 :ip "203.0.113.12" :vpc_ip "10.40.0.5" :user "root" :sudoer "root" :name "automq-vultr-2"}]})
-
-(deftest the-spec-describes-one-homogeneous-vultr-cluster
-  ;; The Compute Cluster Standard's spec-content test: the shape ONCE is handed
-  ;; is data, and this is what that data must say.
-  (is (= [] (once-cluster/spec-errors cluster/spec)))
-  (is (= [{:role nil :count-key :automq-node-count :count 3}] (:roles cluster/spec)))
-  (is (= {:role nil :index 0} (once-cluster/entry-id cluster/spec))
-      "the bare profile alias reaches node 0")
-  (is (= {:non-empty ["ssh-sources"] :may-be-empty ["kafka-sources"]} (:sources cluster/spec)))
-  (is (= "vultr" (:default cluster/spec)))
-  (is (= ["vultr"] (keys (:registry cluster/spec))))
-  (is (= {:mode :created :key :vultr-vpc-subnet}
-         (get-in cluster/spec [:registry "vultr" :network]))
-      "the quorum crosses a VPC this package creates from vultr-vpc-subnet")
-  (is (not (contains? cluster/spec :fallback-subnet))
-      "a created network cuts its fallbacks from the CIDR key, not a stand-in")
-  (is (= [:vultr-api-key] (get-in cluster/spec [:registry "vultr" :secrets]))))
+   :nodes [{:node_id "0" :role nil :provider "vultr" :index 0 :ip "203.0.113.10" :vpc_ip "10.40.0.3" :user "root" :sudoer "root" :name "automq-vultr-0"}
+           {:node_id "1" :role nil :provider "vultr" :index 1 :ip "203.0.113.11" :vpc_ip "10.40.0.4" :user "root" :sudoer "root" :name "automq-vultr-1"}
+           {:node_id "2" :role nil :provider "vultr" :index 2 :ip "203.0.113.12" :vpc_ip "10.40.0.5" :user "root" :sudoer "root" :name "automq-vultr-2"}]})
 
 (deftest names-derive-from-one-index
   (testing "the machine label, the node id and the broker ordinal are one number"
@@ -78,7 +61,7 @@
 
 (deftest a-build-renders-fixed-addresses
   (testing "ONCE's fallbacks: TEST-NET-1 publicly, the VPC subnet privately, offset 10"
-    (let [ns* (cluster/nodes opts nil)]
+    (let [ns* (cluster/nodes (assoc opts :green/event :build) nil)]
       (is (= 3 (count ns*)))
       (is (= ["192.0.2.10" "192.0.2.11" "192.0.2.12"] (mapv :ip ns*)))
       (is (= ["10.40.0.10" "10.40.0.11" "10.40.0.12"] (mapv :vpc-ip ns*)))

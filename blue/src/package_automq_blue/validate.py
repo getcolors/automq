@@ -11,10 +11,11 @@ import re
 
 from blue.cli import par_name
 from blue.runtime import runtime
-from package_once_blue import compute as once_compute
-from package_once_blue import compute_cluster as once_cluster
-from package_once_blue import ssh as once_ssh
 from package_once_blue.validate import providers as once_providers
+from colors_compute import validate as compute_validate, credential_requirements
+from colors_compute.contract import registry
+from colors_compute.planning import plan_deployment
+from colors_compute.ssh import _mode
 
 from . import cluster
 
@@ -24,12 +25,11 @@ profile_par = par_name("profile")
 # needs and which this module already depends on for the principals; they are
 # named here too so the lifecycle reads them from the validator, as the other
 # delegating packages do.
-compute_providers = cluster.compute_providers
+compute_providers = registry()["compute"]
 default_compute_provider = cluster.default_compute_provider
-spec = cluster.spec
+
 
 # Every key desired state must carry whichever provider is selected. The
-# provider-scoped keys come from `compute_providers`.
 #
 # `vultr-ssh-keys` is deliberately absent: per the SSH Keypair Standard its
 # *absence* selects keygen mode, and requiring it would make a conforming
@@ -47,7 +47,7 @@ required = [
     "automq-data-r2-bucket", "automq-ops-r2-bucket",
     "automq-r2-endpoint", "automq-r2-region",
     "automq-wal-batch-interval-ms", "automq-wal-max-bytes-in-batch",
-    "r2-bucket", "r2-endpoint",
+
 ]
 
 host_re = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
@@ -80,9 +80,8 @@ def _int(value) -> bool:
 
 
 def keygen(opts: dict) -> bool:
-    """Whether this deployment owns its machine keypair. Delegates to ONCE, the
-    standard's reference implementation, so one rule decides it everywhere."""
-    return once_ssh.keygen(opts)
+    """Use normalized library results for application rendering."""
+    return _mode(opts)["mode"] == "managed"
 
 
 def env_errors(env: dict) -> list[str]:
@@ -96,19 +95,15 @@ def _port(value) -> bool:
 
 
 def state_errors(opts: dict) -> list[str]:
-    """Every problem with desired state at once: the missing keys (this
-    package's and the selected provider's), the package's own checks, then the
-    Compute Cluster Standard's — selection, the source lists, the provider
-    rules, the created network's CIDR and the topology — which are ONCE's over
-    `spec`."""
+    """Use normalized library results for application rendering."""
     errors: list[str] = []
     errors += [f":{k} is required"
-               for k in [*required, *once_compute.required_keys(spec, opts)]
+               for k in required
                if missing(opts.get(k))]
     if opts.get("provider-dns") != "cloudflare":
         errors.append(":provider-dns must be cloudflare")
-    if opts.get("provider-backend") not in ("local", "s3", "r2"):
-        errors.append(":provider-backend must be local, s3, or r2")
+    if opts.get("provider-backend") not in ("s3", "r2"):
+        errors.append(":provider-backend must be s3 or r2")
     # A boolean, not `True`. The guard is lifted for exactly one run by
     # COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     # overlay as every other parameter — so demanding `true` here would reject
@@ -213,16 +208,18 @@ def state_errors(opts: dict) -> list[str]:
     if not (missing(batch) or (_int(batch) and batch > 0)):
         errors.append(":automq-wal-max-bytes-in-batch must be a positive integer")
 
-    # --- compute: the Compute Cluster Standard's checks are ONCE's over the
-    # spec — selection, the source lists, the Vultr os id and name rules, the
     # canonical VPC CIDR, and the node count as a positive integer.
-    errors += once_cluster.state_errors(spec, opts)
+    errors += compute_validate(opts)
+    if not errors:
+        try:
+            plan_deployment(opts, cluster.topology(opts), cluster.requirements(opts))
+        except ValueError as error:
+            errors.append(str(error))
     return errors
 
 
-def backend_secrets(opts: dict) -> list[str]:
-    entry = once_providers["provider-backend"].get(str(opts.get("provider-backend")), {})
-    return entry.get("secrets", [])
+def backend_secrets(opts):
+    return registry()['backend'].get(opts.get('provider-backend'), {}).get('secrets', [])
 
 
 # What talking to Cloudflare needs, on any real event. The compute provider's
@@ -241,7 +238,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
     tears down infrastructure and never converges anything, so it asks for the
     provider credentials only; demanding the storage keys to destroy machines
     would be a lock on the exit."""
-    keys = [*once_compute.secrets(spec, opts),
+    keys = [*[name.removeprefix("COLORS_PAR_").lower().replace("_", "-") for name in (credential_requirements(opts) if event == "validate" else [])],
             *dns_secrets,
             *(application_secrets if event == "create" else []),
             *backend_secrets(opts)]
@@ -249,77 +246,20 @@ def secret_errors(opts: dict, event: str) -> list[str]:
             for k in dict.fromkeys(keys) if missing(opts.get(k))]
 
 
-def tofu_env(opts: dict, slot: str) -> dict[str, str]:
-    if slot == "provider-compute":
-        return once_compute.tofu_env(spec, opts)
-    if slot == "provider-dns":
-        return {"cloudflare-api-token": "CLOUDFLARE_API_TOKEN"}
-    if slot == "provider-backend":
-        entry = once_providers["provider-backend"].get(str(opts.get("provider-backend")), {})
-        return entry.get("tofu-env", {})
-    return {}
+def tofu_env(opts, slot):
+    return {'cloudflare-api-token': 'CLOUDFLARE_API_TOKEN'} if slot == 'provider-dns' else once_providers['provider-backend'].get(opts.get('provider-backend'), {}).get('tofu-env', {}) if slot == 'provider-backend' else {}
 
 
 # ------------------------------------------------------------ runtime checks
 
-required_tools = ["tofu", "ansible-playbook", "ssh", "curl", "openssl"]
-
-account_url = "https://api.vultr.com/v2/account"
-
+required_tools = ["tofu", "aws", "ansible-playbook", "ssh", "ssh-keygen", "curl", "openssl"]
 
 async def _command_present(runner, command: str) -> bool:
     result = await runner(["sh", "-c", 'command -v "$1" >/dev/null 2>&1', "sh", command])
     return result.exit == 0
 
 
-def api_error(result) -> str | None:
-    """Turn one probe of the Vultr account endpoint into an error, or None.
-
-    The distinction is the point. A single message covering every non-2xx status
-    reports a Vultr outage as a bad credential and sends the operator off to
-    rotate a key that was never the problem. Only 401 and 403 say anything about
-    the key. A request that never reached the API at all shows up as curl's
-    literal `000`, which is not an HTTP status: that is the operator's network,
-    and naming it saves the same wasted rotation."""
-    exit_code = result.exit if hasattr(result, "exit") else result["exit"]
-    out = result.out if hasattr(result, "out") else result.get("out")
-    match = re.search(r"\d{3}$", _s(out).strip())
-    status = int(match.group(0)) if match else None
-    if status is None or status == 0:
-        return (f"could not reach the Vultr API at {account_url} "
-                f"(curl exit {exit_code}): this is a local network, DNS, or TLS "
-                "failure, not a credential problem. Check connectivity and retry.")
-    if 200 <= status <= 299:
-        return None
-    if status in (401, 403):
-        return (f"Vultr rejected COLORS_PAR_VULTR_API_KEY (HTTP {status}): the key "
-                "is missing, revoked, or its allowed-subnet list does not include "
-                "this machine. Check the key in the Vultr console and update "
-                ".envrc.private.")
-    if status == 429:
-        return ("Vultr rate-limited the credential check (HTTP 429). The key is "
-                "valid; wait for the limit to reset and retry.")
-    if 500 <= status <= 599:
-        return (f"the Vultr API returned HTTP {status} for {account_url}. That is a "
-                "failure on Vultr's side, not your credential — do not rotate "
-                "COLORS_PAR_VULTR_API_KEY. Check https://status.vultr.com and retry.")
-    return f"unexpected HTTP {status} from {account_url} during the credential check."
-
-
-async def runtime_errors(opts: dict, runner=None) -> list[str]:
-    """Check local tools and authenticate the configured Vultr key. The runner
-    argument keeps command decisions testable without network access."""
+async def runtime_errors(opts, runner=None):
     runner = runner or runtime.exec
     present = {tool: await _command_present(runner, tool) for tool in required_tools}
-    errors = [f"required tool is not on PATH: {tool}"
-              for tool in required_tools if not present[tool]]
-    key = opts.get("vultr-api-key")
-    # No `-f`: the status code is the diagnosis, so it has to survive into
-    # stdout instead of collapsing into curl's exit code.
-    result = None
-    if not missing(key) and present["curl"]:
-        result = await runner(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-                               "--connect-timeout", "10", "--max-time", "20",
-                               "-H", f"Authorization: Bearer {key}", account_url])
-    probe = api_error(result) if result is not None else None
-    return [*errors, probe] if probe else errors
+    return [f"required tool is not on PATH: {tool}" for tool in required_tools if not present[tool]]

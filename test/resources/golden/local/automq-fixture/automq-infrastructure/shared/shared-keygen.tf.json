@@ -1,0 +1,25 @@
+{
+  "output": {
+    "registration": {
+      "value": {
+        "id": "${vultr_ssh_key.machine.id}",
+        "provider": "vultr",
+        "scope": "account"
+      }
+    },
+    "ssh_key_id": {
+      "value": "${vultr_ssh_key.machine.id}"
+    }
+  },
+  "resource": {
+    "vultr_ssh_key": {
+      "machine": {
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "name": "automq-fixture",
+        "ssh_key": "ssh-ed25519 PLACEHOLDER managed-by-colors"
+      }
+    }
+  }
+}
