@@ -141,7 +141,7 @@ def ansible_local_data(opts: dict) -> dict:
     reach the play as extra-vars instead, so the rendered playbook carries no IP
     and is identical on every workstation (SSH Config Standard §6)."""
     return {**opts,
-            "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
+            "ssh-keygen": validate.keygen(opts),
             "ssh-config-identity-file": ssh_config.identity_file(opts) if validate.keygen(opts) else opts.get("ssh-private-key-path", ""),
             "host-alias": ssh_config.host_alias(opts)}
 

@@ -40,7 +40,7 @@
   (into [(:profile opts)] (map #(str (:profile opts) "-" (:node_id %)) (compute/expand (cluster/topology opts)))))
 
 (defn config-path []
-  (io/file (System/getProperty "user.home") ".ssh" "config"))
+  (io/file (or (not-empty (System/getenv "HOME")) (System/getProperty "user.home")) ".ssh" "config"))
 
 ;; The alias alone. A profile is `<package>-<suffix>`, so it already names the
 ;; package, and two packages sharing one profile would be fighting over
