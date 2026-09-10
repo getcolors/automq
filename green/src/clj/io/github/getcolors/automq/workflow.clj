@@ -7,6 +7,7 @@
             [green.tofu :as tofu]
             [green.workflow :as wf]
             [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.automq.storage :as storage]
             [io.github.getcolors.automq.ssh :as ssh]
             [io.github.getcolors.automq.ssh-config :as ssh-config]
             [io.github.getcolors.automq.tools :as tools]
@@ -16,6 +17,7 @@
 (def defaults
   {:provider-compute validate/default-compute-provider
    :provider-dns "cloudflare"
+   :automq-tls-mode "acme"
    :provider-backend "r2"
    :compute-prevent-destroy true
    :workdir ".colors"
@@ -57,13 +59,23 @@
         (cond
           (and real? (= event :delete))
           (let [result (inspection/read-deployment opts (into {} env))]
+            (if (and (= "managed" (:s3-bucket-mode opts)) (not= "present" (:status result)))
+              (assoc opts :automq/finalize-only true :green/exit 0)
             (case (:status result)
               "destroyed" (assoc opts :automq/already-destroyed true :green/exit 0)
               "present" (cond-> (assoc opts :colors-compute/cluster (:cluster result) :green/exit 0)
                           (get-in result [:key :private_key_path]) (assoc :ssh-private-key-path (get-in result [:key :private_key_path])))
-              (assoc opts :green/exit 1 :green/err "compute state unavailable; legacy monolithic state requires explicit migration")))
+              (assoc opts :green/exit 1 :green/err "compute state unavailable; legacy monolithic state requires explicit migration"))))
           (and real? (= event :create)) (ssh-config/preflight! opts)
           :else (assoc (ssh/with-machine-key opts) :green/exit 0)))} env)))
+
+(defn backend-finalize-step [opts]
+  (try
+    (let [result ((requiring-resolve 'io.github.getcolors.compute-managed-backend/finalize-backend!) opts)]
+      (if (contains? #{"destroyed" "absent" "skipped"} (:status result))
+        (assoc opts :green/exit 0)
+        (assoc opts :green/exit 1 :green/err "managed backend finalization refused")))
+    (catch Exception _ (assoc opts :green/exit 1 :green/err "managed backend finalization refused; live or unowned state remains"))))
 
 (defn wire-fn [step run-opts]
   (case (:green/event run-opts)
@@ -89,12 +101,15 @@
       ;; DNS goes before the compute destroy: records pointing at addresses
       ;; that have been released are worse than no records, because a reissued
       ;; address makes them point at somebody else's machine.
-      :automq/dns [tools/dns-step :automq/infrastructure]
-      :automq/infrastructure [tools/infrastructure-step])
+      :automq/dns [tools/dns-step (if (storage/managed? run-opts) :automq/storage :automq/infrastructure)]
+      :automq/storage [storage/step :automq/infrastructure]
+      :automq/infrastructure (cond-> [tools/infrastructure-step] (= "managed" (:s3-bucket-mode run-opts)) (conj :automq/backend-finalize))
+      :automq/backend-finalize [backend-finalize-step])
 
     (case step
       :automq/start [start-step :automq/infrastructure]
-      :automq/infrastructure [tools/infrastructure-step :automq/ssh-config]
+      :automq/infrastructure [tools/infrastructure-step (if (storage/managed? run-opts) :automq/storage :automq/ssh-config)]
+      :automq/storage [storage/step :automq/ssh-config]
       :automq/ssh-config [tools/ansible-local-step :automq/dns]
       ;; DNS before convergence, because every broker advertises a name that
       ;; must already resolve — and because the certificate is issued for
@@ -109,15 +124,19 @@
     :key-fn #(str (:profile %) "/" tool ".tfstate")}))
 
 (def side-effecting-steps
-  [:automq/infrastructure :automq/dns :automq/ssh-config :automq/ansible
+  [:automq/backend-finalize :automq/storage :automq/infrastructure :automq/dns :automq/ssh-config :automq/ansible
    :automq/acceptance :automq/ssh-cleanup])
 
 (def workflow
   (-> (wf/workflow {:start :automq/start :wire-fn wire-fn
-                    :next-fn (fn [_ successors opts]
-                               (if (or (:automq/already-destroyed opts) (wf/failed? opts)) []
-                                   (mapv #(vector % opts) successors)))})
+                    :next-fn (fn [step successors opts]
+                               (cond
+                                 (or (:automq/already-destroyed opts) (wf/failed? opts)) []
+                                 (and (= step :automq/start) (:automq/finalize-only opts)) [[:automq/backend-finalize opts]]
+                                 :else (mapv #(vector % opts) successors)))})
       (wf/advice-add :automq/dns :before ::backend
                      (backend-advice tools/dns-tool))
+      (wf/advice-add :automq/storage :before ::storage-backend
+                     (backend-advice storage/tool))
       progress/advise
       (dry-run/advise side-effecting-steps)))

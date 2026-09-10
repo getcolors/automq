@@ -98,10 +98,16 @@ def state_errors(opts: dict) -> list[str]:
     """Use normalized library results for application rendering."""
     errors: list[str] = []
     errors += [f":{k} is required"
-               for k in required
+               for k in [*required, *({"r2": ["r2-bucket", "r2-endpoint"], "s3": ["s3-bucket", "s3-region"]}.get(opts.get("provider-backend"), []))]
                if missing(opts.get(k))]
-    if opts.get("provider-dns") != "cloudflare":
-        errors.append(":provider-dns must be cloudflare")
+    if opts.get("provider-dns") not in ("cloudflare", "none"):
+        errors.append(":provider-dns must be cloudflare or none")
+    if opts.get("automq-tls-mode", "acme") not in ("acme", "private-ca"):
+        errors.append(":automq-tls-mode must be acme or private-ca")
+    if opts.get("provider-dns") == "none" and opts.get("automq-tls-mode") != "private-ca":
+        errors.append(":provider-dns none requires :automq-tls-mode private-ca")
+    if opts.get("automq-tls-mode") == "private-ca" and opts.get("provider-dns") != "none":
+        errors.append(":automq-tls-mode private-ca requires :provider-dns none")
     if opts.get("provider-backend") not in ("s3", "r2"):
         errors.append(":provider-backend must be s3 or r2")
     # A boolean, not `True`. The guard is lifted for exactly one run by
@@ -182,6 +188,12 @@ def state_errors(opts: dict) -> list[str]:
                       "must all differ")
 
     # --- object storage
+    if "automq-storage-managed" in opts and not isinstance(opts["automq-storage-managed"], bool):
+        errors.append(":automq-storage-managed must be true or false")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") != "s3":
+        errors.append("managed storage requires :automq-storage-provider s3")
+    if opts.get("automq-storage-managed") and opts.get("automq-r2-region") == "auto":
+        errors.append("managed S3 storage requires an AWS region in :automq-r2-region")
     bucket_keys = ["automq-data-r2-bucket", "automq-ops-r2-bucket"]
     errors += [f":{k} must be a valid bucket name" for k in bucket_keys
                if not missing(opts.get(k)) and not bucket_re.fullmatch(_s(opts.get(k)))]
@@ -197,7 +209,7 @@ def state_errors(opts: dict) -> list[str]:
     # style question.
     errors += [f":{k} must not be the OpenTofu state bucket: AutoMQ writes keys "
                "at the bucket root" for k in bucket_keys
-               if not missing(opts.get(k)) and _s(opts.get(k)) == _s(opts.get("r2-bucket"))]
+               if not missing(opts.get(k)) and _s(opts.get(k)) == _s(opts.get("s3-bucket" if opts.get("provider-backend") == "s3" else "r2-bucket"))]
     if not (missing(opts.get("automq-r2-endpoint"))
             or endpoint_re.fullmatch(_s(opts.get("automq-r2-endpoint")))):
         errors.append(":automq-r2-endpoint must be an https endpoint URL")
@@ -239,8 +251,8 @@ def secret_errors(opts: dict, event: str) -> list[str]:
     provider credentials only; demanding the storage keys to destroy machines
     would be a lock on the exit."""
     keys = [*[name.removeprefix("COLORS_PAR_").lower().replace("_", "-") for name in (credential_requirements(opts) if event == "validate" else [])],
-            *dns_secrets,
-            *(application_secrets if event == "create" else []),
+            *(dns_secrets if opts.get("provider-dns") != "none" else []),
+            *(application_secrets if event == "create" and not opts.get("automq-storage-managed") else []),
             *backend_secrets(opts)]
     return [f"required credential is not set: {par_name(k)}"
             for k in dict.fromkeys(keys) if missing(opts.get(k))]

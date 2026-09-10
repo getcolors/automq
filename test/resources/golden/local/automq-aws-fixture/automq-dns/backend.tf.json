@@ -1,0 +1,11 @@
+{
+  "terraform" : {
+    "backend" : {
+      "s3" : {
+        "bucket" : "automq-aws-state-123456789012-us-east-1",
+        "key" : "automq-aws-fixture/automq-dns.tfstate",
+        "region" : "us-east-1"
+      }
+    }
+  }
+}

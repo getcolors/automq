@@ -16,7 +16,8 @@ umask 077
 
 # Reporting "changed" on every run makes the converge's own idempotency claim
 # unfalsifiable. Compare what we are about to write with what is there.
-before=$(sha256sum "$dst" 2>/dev/null | cut -d" " -f1)
+before=""
+if [ -f "$dst" ]; then before=$(sha256sum "$dst" | cut -d" " -f1); fi
 
 render() {
   sed -e "s|@CONTROLLER_PASSWORD@|${AUTOMQ_CONTROLLER_PASSWORD}|g" \

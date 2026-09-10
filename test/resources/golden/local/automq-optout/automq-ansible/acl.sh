@@ -12,7 +12,7 @@ KAFKA=/opt/automq/kafka/bin
 BOOTSTRAP="$1"
 
 run() {
-  docker exec automq "$KAFKA/kafka-acls.sh" \
+  docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq "$KAFKA/kafka-acls.sh" \
     --bootstrap-server "$BOOTSTRAP" \
     --command-config /etc/automq/admin.properties "$@"
 }

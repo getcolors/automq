@@ -20,6 +20,7 @@
 # secret is ever in .colors/, in a golden, or in a template variable.
 - name: Converge AutoMQ
   hosts: automq
+  become: true
   gather_facts: true
   any_errors_fatal: true
   environment:
@@ -36,6 +37,7 @@
           - curl
           - openssl
           - python3
+          - ufw
           # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
           # PEP 668, and a managed package is one fewer thing to break on an
           # unattended upgrade.
@@ -93,7 +95,7 @@
     # public Kafka port.
     - name: Open the cluster ports in the host firewall
       ansible.builtin.shell: |
-        set -uo pipefail
+        set -euo pipefail
         changed=0
         add() {
           out=$(ufw allow "$@" 2>&1)
@@ -101,8 +103,10 @@
           case "$out" in *"Rule added"*) changed=1;; esac
         }
         add proto tcp from any to any port 9092
-        add proto tcp from 10.40.0.0/24 to any port 9093
-        add proto tcp from 10.40.0.0/24 to any port 9094
+        {% for host in groups['automq'] %}
+        add proto tcp from {{ hostvars[host].automq_vpc_ip }}/32 to any port 9093
+        add proto tcp from {{ hostvars[host].automq_vpc_ip }}/32 to any port 9094
+        {% endfor %}
         if [ "$changed" = 1 ]; then echo CHANGED; fi
       args:
         executable: /bin/bash
@@ -285,7 +289,7 @@
         include: [lego]
         mode: "0755"
         creates: /usr/local/bin/lego
-      when: automq_cert_issuer | bool
+      when: automq_cert_issuer | bool and 'acme' == 'acme'
 
     # The Cloudflare token reaches exactly one host. Nodes 1 and 2 consume the
     # published certificate and never hold a credential that can edit DNS, so
@@ -359,45 +363,76 @@
 
     # ----------------------------------------------------------------- start
 
-    - name: Start the broker
-      ansible.builtin.command:
-        cmd: docker compose --env-file /etc/automq/.env -f /etc/automq/compose.yml up -d
-      register: compose_up
-      changed_when: "'Started' in compose_up.stderr or 'Created' in compose_up.stderr"
-
-    # `docker compose up -d` does NOT recreate a container because the contents
-    # of a bind-mounted file changed — Compose compares its own service
-    # definition, not the bytes behind the mount. Without this, a listener,
-    # ACL, storage, heap or retention edit renders cleanly, reports a
-    # successful converge, and the JVM keeps running the old configuration.
-    #
-    # throttle: 1 because these are combined broker+controller nodes: restarting
-    # them together destroys the KRaft majority. Ansible is a single
-    # orchestrator, so ordering here is real; the object-store lease exists for
-    # the timer path, where nothing coordinates the nodes.
-    - name: Restart brokers whose configuration changed
-      ansible.builtin.command:
-        cmd: docker restart automq
-      when: render_config.changed and not compose_up.changed
-      throttle: 1
-      changed_when: true
-
-    - name: Wait for the broker to answer after a configuration change
+    - name: Probe which brokers are currently running
       ansible.builtin.command: >-
-        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
-        --bootstrap-server {{ automq_vpc_ip }}:9094
-        --command-config /etc/automq/admin.properties
-      register: config_restart_ready
-      until: config_restart_ready.rc == 0
-      retries: 40
-      delay: 15
+        docker ps --quiet --filter name=^/automq$ --filter status=running
+      register: automq_running
+      failed_when: false
       changed_when: false
-      when: render_config.changed and not compose_up.changed
+
+    - name: Choose parallel recovery when a running majority is absent
+      ansible.builtin.set_fact:
+        automq_parallel_start: >-
+          {{ (ansible_play_hosts | map('extract', hostvars, ['automq_running', 'stdout'])
+              | reject('equalto', '') | list | length)
+             < ((ansible_play_hosts | length) // 2 + 1) }}
+      run_once: true
+
+    # First genesis and recovery from stopped voters need parallel starts before
+    # waiting: a formatted but stopped cluster cannot elect with one voter up.
+    - name: Start the brokers when a majority is not running
+      ansible.builtin.shell: |
+        set -euo pipefail
+        result=$(docker compose --env-file /etc/automq/.env -f /etc/automq/compose.yml up -d 2>&1)
+        echo "$result"
+        case "$result" in
+          *Started*|*Created*|*Recreated*) echo CHANGED;;
+          *) if {{ render_config.changed | lower }}; then
+               docker restart automq
+               echo CHANGED
+             fi;;
+        esac
+      args:
+        executable: /bin/bash
+      register: compose_start
+      changed_when: "'CHANGED' in compose_start.stdout"
+      when: automq_parallel_start | bool
+
+    # A Compose change (including healthchecks or image) can recreate the JVM,
+    # just like a changed bind-mounted config requires an explicit restart.
+    # Hold one throttle slot through both operations and the recovery probe.
+    - name: Converge existing brokers and wait before touching the next node
+      ansible.builtin.shell: |
+        set -euo pipefail
+        result=$(docker compose --env-file /etc/automq/.env -f /etc/automq/compose.yml up -d 2>&1)
+        echo "$result"
+        case "$result" in
+          *Started*|*Created*|*Recreated*) echo CHANGED;;
+          *) if {{ render_config.changed | lower }}; then
+               docker restart automq
+               echo CHANGED
+             fi;;
+        esac
+        for attempt in $(seq 1 40); do
+          if docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
+            --bootstrap-server {{ automq_vpc_ip }}:9094 \
+            --command-config /etc/automq/admin.properties; then
+            exit 0
+          fi
+          sleep 15
+        done
+        echo "Broker did not recover after convergence" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      when: not (automq_parallel_start | bool)
       throttle: 1
+      register: compose_converge
+      changed_when: "'CHANGED' in compose_converge.stdout"
 
     - name: Wait for the broker to answer
       ansible.builtin.command: >-
-        docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
+        docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh
         --bootstrap-server {{ automq_vpc_ip }}:9094
         --command-config /etc/automq/admin.properties
       register: broker_ready

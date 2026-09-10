@@ -1,0 +1,47 @@
+# Credential-free AWS managed storage fixture. Non-secret desired state only.
+profile: automq-aws-fixture
+workdir: .colors
+provider-compute: aws
+provider-dns: none
+automq-tls-mode: private-ca
+provider-backend: s3
+compute-prevent-destroy: true
+
+s3-bucket: automq-aws-state-123456789012-us-east-1
+s3-region: us-east-1
+s3-bucket-mode: managed
+
+automq-storage-provider: s3
+automq-storage-managed: true
+automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
+automq-node-count: 3
+automq-cluster-id: VrUQI4OSR0y5vnTrGiKsxQ
+automq-host: automq.example.com
+automq-broker-name-prefix: b
+automq-letsencrypt-email: fixture@example.com
+automq-lego-version: 5.4.0
+automq-kafka-port: 9092
+automq-internal-port: 9094
+automq-controller-port: 9093
+automq-sasl-user: automq
+automq-sasl-mechanism: SCRAM-SHA-512
+automq-heap-opts: "-Xms2g -Xmx2g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=3g"
+automq-client-topic-prefix: colors-
+automq-topic-partitions: 6
+automq-log-retention-hours: 168
+automq-data-r2-bucket: automq-aws-data-123456789012-us-east-1
+automq-ops-r2-bucket: automq-aws-ops-123456789012-us-east-1
+automq-r2-endpoint: https://s3.us-east-1.amazonaws.com
+automq-r2-region: us-east-1
+automq-wal-batch-interval-ms: 250
+automq-wal-max-bytes-in-batch: 8388608
+
+aws-region: us-east-1
+aws-availability-zone: us-east-1a
+aws-image-id: ami-0123456789abcdef0
+aws-instance-type: t3.large
+aws-root-volume-size-gb: 40
+aws-vpc-cidr: 10.73.0.0/16
+aws-subnet-cidr: 10.73.1.0/24
+automq-ssh-sources: [0.0.0.0/0]
+automq-kafka-sources: [0.0.0.0/0]

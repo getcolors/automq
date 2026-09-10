@@ -6,6 +6,7 @@
 # Purging them is a separate, explicit operator action; the README says how.
 - name: Stop AutoMQ
   hosts: automq
+  become: true
   gather_facts: false
   ignore_unreachable: true
   tasks:

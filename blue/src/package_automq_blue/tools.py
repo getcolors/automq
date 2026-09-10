@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from blue import tofu
-from blue.ansible import ansible_with_spec
+from blue.ansible import ansible_with_spec, parse_recap
 from blue.cli import stage_dir
 from blue.runtime import runtime
 from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
@@ -14,7 +14,7 @@ from colors_compute.orchestration import orchestrate
 from colors_compute.planning import plan_deployment
 from package_once_blue.utils import registrable_domain
 
-from . import cluster, ssh_config, validate
+from . import cluster, ssh_config, validate, storage
 
 infrastructure_tool = "automq-infrastructure"
 dns_tool = "automq-dns"
@@ -124,6 +124,8 @@ def dns_json(opts: dict, nodes_: list[dict]) -> str:
 
 
 async def dns_step(opts: dict) -> dict:
+    if opts.get("provider-dns") == "none":
+        return {**opts, "blue/exit": 0}
     dir = tool_dir(opts, dns_tool)
     nodes_ = nodes(opts)
     data = {**opts, "automq-zone": zone(opts)}
@@ -232,15 +234,17 @@ def ansible_data(opts: dict) -> dict:
     only in the process that needs it: not in `.colors/`, not in a golden, not
     in this map."""
     nodes_ = nodes(opts)
+    opts = {key: value for key, value in opts.items() if key != "automq/storage-credentials"}
+    names = [node["ip"] for node in nodes_] if opts.get("provider-dns") == "none" else cluster.certificate_names(opts)
     return {**opts,
             "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
             "node-count": cluster.node_count(opts),
             "quorum-voters": cluster.quorum_voters(opts, nodes_),
-            "certificate-names": cluster.certificate_names(opts),
-            "certificate-names-csv": ",".join(cluster.certificate_names(opts)),
+            "certificate-names": names,
+            "certificate-names-csv": ",".join(names),
             "bootstrap-internal": ",".join(
                 f"{n['vpc-ip']}:{cluster.internal_port(opts)}" for n in nodes_),
-            "bootstrap-external": f"{opts.get('automq-host')}:{cluster.kafka_port(opts)}",
+            "bootstrap-external": f"{nodes_[0]['ip'] if opts.get('provider-dns') == 'none' else opts.get('automq-host')}:{cluster.kafka_port(opts)}",
             "admin-user": cluster.admin_user(opts),
             "broker-user": cluster.broker_user(opts),
             "controller-user": cluster.controller_user(opts),
@@ -279,6 +283,12 @@ async def ansible_step(opts: dict) -> dict:
         # unreadable state, or a partial one, never reaches here — the delete
         # failed closed at adoption.)
         return {**opts, "blue/exit": 1, "blue/err": "compute inventory unavailable"}
+    if storage.managed(opts) and opts.get("blue/event") == "create":
+        rendered = scaffold(opts, ansible_specs(opts))
+        result = await runtime.exec(["ansible-playbook", "-i", "inventory.json", "main.yml"], cwd=dir, env=storage.credential_env(opts), timeout_ms=7200000)
+        if result.exit == 0:
+            return {**rendered, "blue/exit": 0, "ansible/recap": parse_recap(result.out)}
+        return {**rendered, "blue/exit": 1, "blue/err": "Ansible convergence failed: " + result.out + result.err}
     return await ansible_with_spec(
         opts, ansible_specs(opts),
         dir=dir, inventory="inventory.json",
@@ -330,6 +340,8 @@ async def acceptance_step(opts: dict) -> dict:
     result = await runtime.exec(
         ["bash", f"{tool_dir(opts, acceptance_tool)}/acceptance.sh"],
         timeout_ms=2700000)
+    if result.out:
+        print(result.out, end="", flush=True)
     return process_result(rendered, "acceptance", result)
 
 

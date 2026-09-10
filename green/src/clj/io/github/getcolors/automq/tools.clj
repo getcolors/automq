@@ -11,6 +11,7 @@
             [green.tofu :as tofu]
             [green.workflow :as wf]
             [io.github.getcolors.automq.cluster :as cluster]
+            [io.github.getcolors.automq.storage :as storage]
             [io.github.getcolors.automq.ssh-config :as ssh-config]
             [io.github.getcolors.automq.validate :as validate]
             [io.github.getcolors.compute-orchestration :as compute]
@@ -108,12 +109,13 @@
          nodes*))))
 
 (defn dns-step [opts]
+  (if (= "none" (:provider-dns opts)) (assoc opts :green/exit 0)
   (let [dir (tool-dir opts dns-tool)
         nodes* (nodes opts)
         data (assoc opts :automq-zone (zone opts))
         specs [(spec (template "dns" "main.tf") (str dir "/main.tf") data)
                (raw-spec (str dir "/record.tf.json") (dns-json data nodes*))]]
-    (tofu/tofu-with-spec opts specs {:dir dir :env (credential-env opts :provider-dns)})))
+    (tofu/tofu-with-spec opts specs {:dir dir :env (merge (storage/aws-env opts) (credential-env opts :provider-dns))}))))
 
 ;; ------------------------------------------------------- ssh config (local)
 
@@ -206,18 +208,20 @@
   only in the process that needs it: not in `.colors/`, not in a golden, not
   in this map."
   [opts]
-  (let [nodes* (nodes opts)]
-    (assoc opts
+  (let [nodes* (nodes opts)
+        certificate-names (if (= "none" (:provider-dns opts)) (mapv :ip nodes*) (cluster/certificate-names opts))]
+    (assoc (dissoc opts :automq/storage-credentials)
            :ssh-keygen (or (validate/keygen? opts) (boolean (:ssh-private-key-path opts)))
            :node-count (cluster/node-count opts)
            :quorum-voters (cluster/quorum-voters opts nodes*)
-           :certificate-names (cluster/certificate-names opts)
-           :certificate-names-csv (str/join "," (cluster/certificate-names opts))
+           :automq-tls-mode (get opts :automq-tls-mode "acme")
+           :certificate-names certificate-names
+           :certificate-names-csv (str/join "," certificate-names)
            :bootstrap-internal (str/join ","
                                          (map #(str (:vpc-ip %) ":"
                                                     (cluster/internal-port opts))
                                               nodes*))
-           :bootstrap-external (str (:automq-host opts) ":" (cluster/kafka-port opts))
+           :bootstrap-external (str (if (= "none" (:provider-dns opts)) (:ip (first nodes*)) (:automq-host opts)) ":" (cluster/kafka-port opts))
            :admin-user (cluster/admin-user opts)
            :broker-user (cluster/broker-user opts)
            :controller-user (cluster/controller-user opts)
@@ -243,6 +247,8 @@
                 ansible-files)
           (raw-spec (str dir "/inventory.json") (inventory data (nodes opts))))))
 
+(declare process-result)
+
 (defn ansible-step [opts]
   (let [dir (tool-dir opts ansible-tool)]
     (if (and (= :delete (:green/event opts)) (nil? (:colors-compute/cluster opts)))
@@ -251,11 +257,19 @@
       ;; unreadable state, or a partial one, never reaches here — the delete
       ;; failed closed at adoption.)
       (assoc opts :green/exit 0)
+      (if (and (storage/managed? opts) (= :create (:green/event opts)))
+        (let [rendered (sc/scaffold opts (ansible-specs opts))
+              result (process/run-with-timeout
+                      ["ansible-playbook" "-i" "inventory.json" "main.yml"]
+                      {:dir dir :extra-env (storage/credential-env opts)} 7200000)]
+          (if (zero? (:exit result))
+            (assoc rendered :green/exit 0 :ansible/recap (ansible/parse-recap (:out result)))
+            (assoc rendered :green/exit 1 :green/err (str "Ansible convergence failed: " (:out result) (:err result)))))
       (ansible/ansible-with-spec opts
         {:dir dir :inventory "inventory.json"
          :playbooks {:create "main.yml" :delete "cleanup.yml"}
          :host-key-checking false}
-        (ansible-specs opts)))))
+        (ansible-specs opts))))))
 
 ;; --------------------------------------------------------------- acceptance
 
@@ -294,10 +308,11 @@
   (let [rendered (sc/scaffold opts (acceptance-specs opts))]
     (if (not= :create (:green/event opts))
       rendered
-      (process-result
-       rendered "acceptance"
-       (process/run-with-timeout
-        ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")] {} 2700000)))))
+      (let [result (process/run-with-timeout
+                    ["bash" (str (tool-dir opts acceptance-tool) "/acceptance.sh")] {} 2700000)]
+        ;; The script emits public gate measurements, never client credentials.
+        (when (seq (:out result)) (print (:out result)) (flush))
+        (process-result rendered "acceptance" result)))))
 
 (defn generated-cleanup-step [opts]
   (-> opts

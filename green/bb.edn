@@ -8,6 +8,7 @@
                    [io.github.getcolors.automq.ssh-config-test]
                    [io.github.getcolors.automq.cluster-test]
                    [io.github.getcolors.automq.tools-test]
+                   [io.github.getcolors.automq.storage-test]
                    [io.github.getcolors.automq.workflow-test])
         :task (let [{:keys [fail error]}
                     (t/run-tests 'io.github.getcolors.automq.validate-test
@@ -15,6 +16,7 @@
                                  'io.github.getcolors.automq.ssh-config-test
                                  'io.github.getcolors.automq.cluster-test
                                  'io.github.getcolors.automq.tools-test
+                                 'io.github.getcolors.automq.storage-test
                                  'io.github.getcolors.automq.workflow-test)]
                 (System/exit (if (pos? (+ fail error)) 1 0)))}
   golden {:doc "Render and diff committed golden output"

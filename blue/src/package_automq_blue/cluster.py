@@ -105,7 +105,7 @@ def _automq_node(opts: dict, node: dict) -> dict:
     """Use normalized library results for application rendering."""
     result = {k: v for k, v in node.items() if k != "vpc_ip"}
     result["vpc-ip"] = node.get("vpc_ip")
-    result["broker-name"] = broker_name(opts, node["index"])
+    result["broker-name"] = node["ip"] if opts.get("provider-dns") == "none" else broker_name(opts, node["index"])
     return result
 
 

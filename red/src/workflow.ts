@@ -6,16 +6,18 @@ import { preflight, type PreflightContext } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
 import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
-import {read_deployment} from "colors-compute-red";
+import {read_deployment, finalize_backend} from "colors-compute-red";
 import * as cluster from "./cluster.ts";
 import * as ssh from "./ssh.ts";
 import * as sshConfig from "./ssh-config.ts";
 import * as tools from "./tools.ts";
+import * as storage from "./storage.ts";
 import * as validate from "./validate.ts";
 
 export const defaults: Opts = {
   "provider-compute": validate.defaultComputeProvider,
   "provider-dns": "cloudflare",
+  "automq-tls-mode": "acme",
   "provider-backend": "r2",
   "compute-prevent-destroy": true,
   workdir: ".colors",
@@ -52,6 +54,7 @@ export async function startStep(opts:Opts,env:Record<string,string|undefined>=pr
  ],afterValidate:async(current,_e,c)=>{
   if(c.real&&c.event==='delete'){
    const result=await (deps.reader??((o)=>read_deployment(o,env)))(current);
+   if(result.status!=='present'&&current['s3-bucket-mode']==='managed')return {...current,'automq/finalize-only':true,'red/exit':0};
    if(result.status==='destroyed')return {...current,'automq/already-destroyed':true,'red/exit':0};
    if(result.status!=='present')return {...current,'red/exit':1,'red/err':'compute state unavailable; legacy monolithic state requires explicit migration'};
    return {...current,'colors-compute/cluster':result.cluster,...(result.key?.private_key_path?{'ssh-private-key-path':result.key.private_key_path}:{}),'red/exit':0};
@@ -84,14 +87,17 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
       // DNS goes before the compute destroy: records pointing at addresses that
       // have been released are worse than no records, because a reissued
       // address makes them point at somebody else's machine.
-      "automq/dns": [tools.dnsStep, "automq/infrastructure"],
-      "automq/infrastructure": [tools.infrastructureStep],
+      "automq/dns": [tools.dnsStep, runOpts["automq-storage-managed"] ? "automq/storage" : "automq/infrastructure"],
+      "automq/storage": [storage.storageStep, "automq/infrastructure"],
+      "automq/infrastructure": runOpts["s3-bucket-mode"] === "managed" ? [tools.infrastructureStep, "automq/backend-finalize"] : [tools.infrastructureStep],
+      "automq/backend-finalize": [backendFinalizeStep],
     };
     return graph[step];
   }
   const graph: Record<string, WireDecl> = {
     "automq/start": [startStep, "automq/infrastructure"],
-    "automq/infrastructure": [tools.infrastructureStep, "automq/ssh-config"],
+    "automq/infrastructure": [tools.infrastructureStep, runOpts["automq-storage-managed"] ? "automq/storage" : "automq/ssh-config"],
+    "automq/storage": [storage.storageStep, "automq/ssh-config"],
     "automq/ssh-config": [tools.ansibleLocalStep, "automq/dns"],
     // DNS before convergence, because every broker advertises a name that must
     // already resolve — and because the certificate is issued for those names
@@ -112,13 +118,28 @@ export function backendAdvice(tool: string) {
 
 export const sideEffecting = [
   "automq/infrastructure", "automq/dns", "automq/ssh-config", "automq/ansible",
-  "automq/acceptance", "automq/ssh-cleanup",
+  "automq/acceptance", "automq/ssh-cleanup", "automq/storage", "automq/backend-finalize",
 ];
 
+export async function backendFinalizeStep(opts: Opts): Promise<Opts> {
+  try {
+    const result = await finalize_backend(opts, {...process.env, ...storage.awsEnv(opts)});
+    return ["skipped", "absent", "destroyed"].includes(result.status) ? {...opts, "red/exit":0} : {...opts, "red/exit":1, "red/err":"managed backend finalization failed"};
+  } catch { return {...opts, "red/exit":1, "red/err":"managed backend finalization failed; inspect ownership and remaining state"}; }
+}
+
+export function nextSteps(step: string, next: string[] | null | undefined, opts: Opts): Array<[string, Opts]> {
+  if (failed(opts)) return [];
+  if (opts["automq/already-destroyed"]) return [];
+  if (step === "automq/start" && opts["automq/finalize-only"]) return [["automq/backend-finalize",opts]];
+  return (next??[]).map(target=>[target,opts]);
+}
+
 function create() {
-  let wf = workflow({ start: "automq/start", wireFn, nextFn:(_step,next,opts)=>opts["automq/already-destroyed"]||failed(opts)?[]:(next??[]).map(step=>[step,opts]) });
+  let wf = workflow({ start: "automq/start", wireFn, nextFn:nextSteps });
   wf = adviceAdd(wf, "automq/dns", "before", "automq.workflow/backend",
     backendAdvice(tools.dnsTool));
+  wf = adviceAdd(wf, "automq/storage", "before", "automq.workflow/storage-backend", backendAdvice(storage.tool));
   return dryRun.advise(progress.advise(wf), sideEffecting);
 }
 

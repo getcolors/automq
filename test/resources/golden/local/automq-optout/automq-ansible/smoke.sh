@@ -16,7 +16,7 @@ EXPECT_NODES=3
 STORE=/usr/local/bin/automq-store
 pass=0
 
-k() { docker exec automq "$KAFKA/$@"; }
+k() { docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq "$KAFKA/$@"; }
 gate() { pass=$((pass+1)); echo "  ok   — $*"; }
 fail() { echo "  FAIL — $*" >&2; exit 1; }
 
@@ -63,7 +63,7 @@ k kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --command-config "$ADMIN" \
 sent=$(mktemp); got=$(mktemp)
 trap 'rm -f "$sent" "$got"' EXIT
 seq 1 500 | sed 's/^/smoke-/' > "$sent"
-docker exec -i automq "$KAFKA/kafka-console-producer.sh" \
+docker exec -e KAFKA_HEAP_OPTS=-Xmx256m -i automq "$KAFKA/kafka-console-producer.sh" \
   --bootstrap-server "$BOOTSTRAP" --producer.config "$ADMIN" \
   --topic "$TOPIC" < "$sent" >/dev/null 2>&1
 k kafka-console-consumer.sh --bootstrap-server "$BOOTSTRAP" \

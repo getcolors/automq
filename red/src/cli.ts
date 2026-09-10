@@ -10,10 +10,10 @@ export const usage =
   "  build     render the work directory only — contact nothing\n" +
   "  create    provision the cluster, converge it, and prove it works\n" +
   "  delete    stop the cluster and destroy DNS and infrastructure\n" +
-  "  validate  check desired state, tools, and Vultr access\n" +
+  "  validate  check desired state, tools, and credentials\n" +
   "\n" +
-  "Object storage is never destroyed by `delete`: the buckets hold the\n" +
-  "cluster's data, and emptying them is a separate, explicit action.";
+  "Adopted storage is retained by `delete`. Managed S3 buckets and their\n" +
+  "data are deleted only after the destruction guard is explicitly lifted.";
 
 // The nearest colors.yml at or above the working directory. Walking up means
 // red can be run from any subdirectory of a project and still find the one

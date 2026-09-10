@@ -1,0 +1,141 @@
+{
+  "output": {
+    "params": {
+      "value": {
+        "network_cidr": "${aws_vpc.network.cidr_block}",
+        "provider": "aws",
+        "security_group_id": "${aws_security_group.network.id}",
+        "subnet_id": "${aws_subnet.public.id}",
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    }
+  },
+  "provider": {
+    "aws": {
+      "region": "us-east-1"
+    }
+  },
+  "resource": {
+    "aws_internet_gateway": {
+      "gateway": {
+        "tags": {
+          "Name": "automq-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_route": {
+      "internet": {
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "${aws_internet_gateway.gateway.id}",
+        "route_table_id": "${aws_route_table.public.id}"
+      }
+    },
+    "aws_route_table": {
+      "public": {
+        "tags": {
+          "Name": "automq-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_route_table_association": {
+      "public": {
+        "route_table_id": "${aws_route_table.public.id}",
+        "subnet_id": "${aws_subnet.public.id}"
+      }
+    },
+    "aws_security_group": {
+      "network": {
+        "description": "Deployment node access",
+        "name": "automq-aws-fixture-firewall",
+        "tags": {
+          "Name": "automq-aws-fixture-firewall"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_subnet": {
+      "public": {
+        "availability_zone": "us-east-1a",
+        "cidr_block": "10.73.1.0/24",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "automq-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_vpc": {
+      "network": {
+        "cidr_block": "10.73.0.0/16",
+        "enable_dns_hostnames": true,
+        "enable_dns_support": true,
+        "tags": {
+          "Name": "automq-aws-fixture"
+        }
+      }
+    },
+    "aws_vpc_security_group_egress_rule": {
+      "egress": {
+        "cidr_ipv4": "${each.value.cidr}",
+        "for_each": {
+          "all-ipv4": {
+            "cidr": "0.0.0.0/0",
+            "from_port": null,
+            "protocol": "-1",
+            "to_port": null
+          }
+        },
+        "from_port": "${each.value.from_port}",
+        "ip_protocol": "${each.value.protocol}",
+        "security_group_id": "${aws_security_group.network.id}",
+        "to_port": "${each.value.to_port}"
+      }
+    },
+    "aws_vpc_security_group_ingress_rule": {
+      "ingress": {
+        "cidr_ipv4": "${each.value.cidr}",
+        "for_each": {
+          "controller:private": {
+            "cidr": "10.73.0.0/16",
+            "from_port": 9093,
+            "protocol": "tcp",
+            "to_port": 9093
+          },
+          "internal:private": {
+            "cidr": "10.73.0.0/16",
+            "from_port": 9094,
+            "protocol": "tcp",
+            "to_port": 9094
+          },
+          "kafka:0.0.0.0/0": {
+            "cidr": "0.0.0.0/0",
+            "from_port": 9092,
+            "protocol": "tcp",
+            "to_port": 9092
+          },
+          "ssh:0.0.0.0/0": {
+            "cidr": "0.0.0.0/0",
+            "from_port": 22,
+            "protocol": "tcp",
+            "to_port": 22
+          }
+        },
+        "from_port": "${each.value.from_port}",
+        "ip_protocol": "${each.value.protocol}",
+        "security_group_id": "${aws_security_group.network.id}",
+        "to_port": "${each.value.to_port}"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "aws": {
+        "source": "hashicorp/aws",
+        "version": "6.31.0"
+      }
+    },
+    "required_version": ">= 1.8.0"
+  }
+}

@@ -3,7 +3,7 @@
 A [getcolors](https://www.getcolors.ai/) Package Skill that provisions a
 three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster: the
 Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles, and
-Cloudflare R2 as the storage tier.
+Cloudflare R2 or managed AWS S3 as the storage tier.
 
 It ships in all three colours — `green/` (Clojure), `red/` (TypeScript) and
 `blue/` (Python) — which render byte-identical artifacts from one `colors.yml`.
@@ -45,10 +45,27 @@ which makes them the safe way to check a `colors.yml` edit.
 | Layer | What |
 |---|---|
 | Compute | Three machines on a private network via colors-compute; public SSH/client and private quorum rules |
-| DNS | One A record per node on the bootstrap name, one per broker, all DNS-only |
-| TLS | One Let's Encrypt certificate over DNS-01, issued by node 0, covering the bootstrap name and every broker name |
-| Storage | Two R2 buckets — data (stream objects and the S3 WAL) and ops |
+| DNS | Cloudflare DNS records, or `provider-dns: none` for direct public IP access |
+| TLS | Let's Encrypt over DNS-01, or an explicit private CA with IP SANs |
+| Storage | Two adopted R2 buckets, or two deployment-owned S3 buckets and a scoped IAM identity |
 | Identity | Four SASL principals; no anonymous access on any listener |
+
+Managed S3 uses `automq-storage-provider: s3` and
+`automq-storage-managed: true`. The existing `automq-data-r2-bucket`,
+`automq-ops-r2-bucket`, `automq-r2-endpoint`, and `automq-r2-region` keys also
+address S3 for compatibility. Supply the regional S3 endpoint and AWS region;
+application access keys are generated with access only to those two buckets,
+kept in encrypted remote state, and passed to Ansible through its environment.
+Use a separate `s3-bucket` for state; `s3-bucket-mode: managed` delegates its
+lifecycle to colors-compute.
+
+For AWS-only operation without DNS credentials, set `provider-dns: none` and
+`automq-tls-mode: private-ca`. Brokers advertise public IPs and acceptance
+exports the public CA to `.colors/<profile>/automq-acceptance/ca.crt`. Clients
+must trust that CA, for example with kcat `-X ssl.ca.location=<ca.crt>`.
+The issuer's private CA key stays on node 0 in `/etc/automq/ca`. If that CA
+is lost while a published certificate exists, renewal refuses to mint a new
+trust root; restore the issuer CA from backup before renewing.
 
 ## Connecting
 
@@ -85,9 +102,13 @@ Over `ssh <profile>` (node 0) or `ssh <profile>-<n>`:
   majority, then re-run with `AUTOMQ_ALLOW_REFORMAT=true`.
 - **Certificate renewal.** Node 0's timer reissues and publishes; every node
   picks it up and restarts one at a time under an object-store lease.
-- **Purging storage.** `delete` deliberately leaves both buckets intact — they
-  hold the cluster's data. Empty them by hand, including the
-  `_colors/<profile>/` markers, before adopting them again.
+- **Purging adopted storage.** `delete` leaves adopted R2 buckets intact. Empty
+  them by hand, including `_colors/<profile>/` markers, before adopting again.
+- **Deleting managed storage.** `automq-storage-managed: true` opts into ownership
+  of both S3 application buckets and their IAM identity. An authorized `delete`
+  stops the brokers, removes these buckets **including all cluster data**, then
+  destroys compute. Existing or inaccessible buckets are refused on first create.
+  The default adopted-storage mode never creates or deletes buckets.
 
 ## Limitations, stated plainly
 
@@ -104,7 +125,7 @@ Over `ssh <profile>` (node 0) or `ssh <profile>-<n>`:
 ## Development
 
 ```sh
-cd green && bb test && bb golden     # unit tests; two fixtures: keygen and opt-out
+cd green && bb test && bb golden     # unit tests; fixtures: keygen, opt-out, and AWS
 cd red   && bun test && bun run typecheck
 cd blue  && uv run pytest
 ./scripts/parity.sh                  # the three colours, byte for byte
@@ -112,7 +133,7 @@ cd blue  && uv run pytest
 ```
 
 `bb golden:accept` regenerates the committed output — only after reading the
-diff. `scripts/parity.sh` is the net the goldens cannot be: it renders both
+diff. `scripts/parity.sh` is the net the goldens cannot be: it renders all three
 fixtures in all three colours and diffs the trees, and it diffs the template
 copies each colour carries. Use `AUTOMQ_LIB_ROOT` (the repository root, for
 any colour), `COLORS_COMPUTE_LIB_ROOT`, `GREEN_LIB_ROOT` and `ONCE_LIB_ROOT` to develop across repository

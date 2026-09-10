@@ -33,6 +33,27 @@ The package refuses to run against a `~/.ssh/config` that already declares
 `Host <profile>` or `Host <profile>-<n>` outside its own markers, or whose
 first option stands above the first `Host` line.
 
+## Managed AWS storage and private TLS
+
+Set `automq-storage-managed: true` and `automq-storage-provider: s3` to create
+both application buckets and an IAM identity restricted to them. The existing
+`automq-data-r2-bucket`, `automq-ops-r2-bucket`, `automq-r2-endpoint`, and
+`automq-r2-region` keys specify S3 bucket names, HTTPS regional endpoint, and
+AWS region. No application storage access keys are required from the operator.
+The generated credentials remain in sensitive Terraform outputs and reach
+Ansible only through its process environment.
+
+Managed `delete` removes both buckets **and all their data** after stopping
+brokers. Adopted R2 storage remains the default and survives `delete`.
+Managed first create refuses to adopt an existing or inaccessible bucket.
+State must use a third bucket; `provider-backend: s3`, `s3-bucket`, `s3-region`,
+and `s3-bucket-mode: managed` select the colors-compute state bucket lifecycle.
+
+`provider-dns: none` requires `automq-tls-mode: private-ca`; no Cloudflare token
+is needed. Brokers advertise public IPs, and clients trust the public CA
+exported by acceptance to `.colors/<profile>/automq-acceptance/ca.crt`.
+The defaults remain Cloudflare DNS and `automq-tls-mode: acme`.
+
 ## Desired state
 
 ### Cluster

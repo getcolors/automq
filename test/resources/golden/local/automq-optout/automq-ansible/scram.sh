@@ -35,16 +35,16 @@ sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule require
 EOF
   docker cp "$f" automq:/tmp/probe.properties >/dev/null 2>&1
   local rc=1
-  if docker exec automq "$KAFKA/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" \
+  if docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq "$KAFKA/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" \
        --command-config /tmp/probe.properties --list >/dev/null 2>&1; then rc=0; fi
-  docker exec automq rm -f /tmp/probe.properties >/dev/null 2>&1
+  docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq rm -f /tmp/probe.properties >/dev/null 2>&1
   rm -f "$f"
   return $rc
 }
 
 upsert() {
   local user="$1" pass="$2"
-  docker exec automq "$KAFKA/kafka-configs.sh" --bootstrap-server "$BOOTSTRAP" \
+  docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq "$KAFKA/kafka-configs.sh" --bootstrap-server "$BOOTSTRAP" \
     --command-config "$ADMIN" --alter \
     --add-config "SCRAM-SHA-512=[iterations=${AUTOMQ_SCRAM_ITERATIONS},password=${pass}]" \
     --entity-type users --entity-name "$user" >/dev/null 2>&1
@@ -59,7 +59,7 @@ stored credential differs from the generated one, or the metadata log holds no
 SCRAM records at all — which happens when a cluster was formatted without
 bootstrap records. Check:
 
-  docker exec automq $KAFKA/kafka-dump-log.sh --cluster-metadata-decoder \\
+  docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq $KAFKA/kafka-dump-log.sh --cluster-metadata-decoder \\
     --files /var/lib/automq/metadata/bootstrap.checkpoint | grep -c USER_SCRAM_CREDENTIAL_RECORD
 
 Zero means the cluster can never authenticate anyone and must be reformatted:

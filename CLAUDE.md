@@ -102,9 +102,15 @@ the pinned tag** when bumping `automq-image`.
   verbatim, objects actually present in both buckets, a wrong password refused,
   and the client principal denied a cluster operation.
 
-## Object storage is adopted, never created
+## Object storage ownership is explicit
 
-The scoped token cannot create buckets, so both must exist and be **empty**.
+Adopted R2 mode remains the default: both buckets must exist and be **empty**.
+Opt-in `automq-storage-managed: true` with `automq-storage-provider: s3` creates
+two private S3 buckets and an IAM identity restricted to them in a separate
+`automq-storage` state. Managed delete removes the buckets and all contents
+after broker cleanup; adopted storage survives delete. Never change an adopted
+deployment to managed mode to import existing buckets: first create refuses
+pre-existing buckets.
 AutoMQ writes `<hash>/_kafka_<cluster-id>/…` at the bucket root and supports no
 configurable prefix, so it cannot share a bucket with anything — including
 another AutoMQ cluster. `store.py` proves emptiness by paginating the whole

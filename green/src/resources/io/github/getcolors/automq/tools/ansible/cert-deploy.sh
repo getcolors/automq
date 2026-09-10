@@ -62,14 +62,14 @@ trap '"$STORE" lease-release --holder "node-$NODE_ID" >/dev/null 2>&1 || true' E
 # Only restart into a healthy cluster: if it is already one node down, taking
 # another is how a rolling restart becomes an outage. Both conditions are
 # required — a quorum with a leader AND every broker registered.
-status=$(docker exec automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
+status=$(docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq /opt/automq/kafka/bin/kafka-metadata-quorum.sh \
            --bootstrap-server "$BOOTSTRAP" \
            --command-config /etc/automq/admin.properties describe --status 2>/dev/null || true)
 if ! grep -q 'LeaderId' <<<"$status"; then
   echo "cert-deploy: the quorum reports no leader, refusing to restart" >&2
   exit 1
 fi
-registered=$(docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
+registered=$(docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
                --bootstrap-server "$BOOTSTRAP" \
                --command-config /etc/automq/admin.properties 2>/dev/null | grep -c 'id: ' || true)
 if [ "${registered:-0}" -lt "$EXPECT_NODES" ]; then
@@ -80,7 +80,7 @@ fi
 docker restart automq >/dev/null
 
 for _ in $(seq 1 60); do
-  if docker exec automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
+  if docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq /opt/automq/kafka/bin/kafka-broker-api-versions.sh \
        --bootstrap-server "$BOOTSTRAP" \
        --command-config /etc/automq/admin.properties >/dev/null 2>&1; then
     # The broker answering is not evidence it is serving the new certificate:

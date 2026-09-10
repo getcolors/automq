@@ -20,7 +20,7 @@ export const computeName=(opts:Opts)=>requests(opts).shared.name;
 export const machineName=(opts:Opts,i:number)=>requests(opts).nodes[i].name;
 export const machineNames=(opts:Opts)=>indexes(opts).map(i=>machineName(opts,i));
 export interface Node {role:string|null;index:number;name:string;ip:string;'vpc-ip':string;user:string;sudoer:string;'broker-name':string;[extra:string]:any}
-function automqNode(opts:Opts,node:any):Node{const {vpc_ip,...rest}=node;return {...rest,'vpc-ip':vpc_ip,'broker-name':brokerName(opts,node.index)};}
+function automqNode(opts:Opts,node:any):Node{const {vpc_ip,...rest}=node;return {...rest,'vpc-ip':vpc_ip,'broker-name':opts['provider-dns']==='none'?node.ip:brokerName(opts,node.index)};}
 export const fallbackNodes=(opts:Opts):Node[]=>plan_deployment(opts,topology(opts),requirements(opts)).cluster.nodes.map(n=>automqNode(opts,n));
 export function nodes(opts:Opts,params?:any):Node[]{
  const recorded=params??opts['colors-compute/cluster'];if(!recorded){if(opts['red/event']==='build'||opts['red/dry-run'])return fallbackNodes(opts);throw Error('compute cluster unavailable; refusing placeholder inventory');}

@@ -41,7 +41,6 @@ export const required = [
   "automq-data-r2-bucket", "automq-ops-r2-bucket",
   "automq-r2-endpoint", "automq-r2-region",
   "automq-wal-batch-interval-ms", "automq-wal-max-bytes-in-batch",
-  "r2-bucket", "r2-endpoint",
 ];
 
 const hostRe = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
@@ -82,10 +81,13 @@ function port(value: unknown): boolean {
 // Application checks run alongside the shared provider and rendering contracts.
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
-  for (const key of required) {
+  for (const key of [...required, ...(opts["provider-backend"] === "r2" ? ["r2-bucket", "r2-endpoint"] : opts["provider-backend"] === "s3" ? ["s3-bucket", "s3-region"] : [])]) {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
-  if (opts["provider-dns"] !== "cloudflare") errors.push(":provider-dns must be cloudflare");
+  if (!["cloudflare", "none"].includes(opts["provider-dns"])) errors.push(":provider-dns must be cloudflare or none");
+  if (!["acme", "private-ca"].includes(opts["automq-tls-mode"] ?? "acme")) errors.push(":automq-tls-mode must be acme or private-ca");
+  if (opts["provider-dns"] === "none" && opts["automq-tls-mode"] !== "private-ca") errors.push(":provider-dns none requires :automq-tls-mode private-ca");
+  if (opts["automq-tls-mode"] === "private-ca" && opts["provider-dns"] !== "none") errors.push(":automq-tls-mode private-ca requires :provider-dns none");
   if (!["s3", "r2"].includes(String(opts["provider-backend"]))) {
     errors.push(":provider-backend must be s3 or r2");
   }
@@ -176,6 +178,9 @@ export function stateErrors(opts: Opts): string[] {
   }
 
   // --- object storage
+  if ("automq-storage-managed" in opts && typeof opts["automq-storage-managed"] !== "boolean") errors.push(":automq-storage-managed must be true or false");
+  if (opts["automq-storage-managed"] && opts["automq-storage-provider"] !== "s3") errors.push("managed storage requires :automq-storage-provider s3");
+  if (opts["automq-storage-managed"] && opts["automq-r2-region"] === "auto") errors.push("managed S3 storage requires an AWS region in :automq-r2-region");
   for (const key of ["automq-data-r2-bucket", "automq-ops-r2-bucket"]) {
     if (!missing(opts[key]) && !bucketRe.test(String(opts[key]))) {
       errors.push(`:${key} must be a valid bucket name`);
@@ -192,7 +197,7 @@ export function stateErrors(opts: Opts): string[] {
   // AutoMQ writes hash-prefixed keys at the bucket root. Sharing them is not a
   // style question.
   for (const key of ["automq-data-r2-bucket", "automq-ops-r2-bucket"]) {
-    if (!missing(opts[key]) && String(opts[key]) === String(opts["r2-bucket"])) {
+    if (!missing(opts[key]) && String(opts[key]) === String(opts[opts["provider-backend"] === "s3" ? "s3-bucket" : "r2-bucket"])) {
       errors.push(`:${key} must not be the OpenTofu state bucket: AutoMQ writes keys at the bucket root`);
     }
   }
@@ -236,8 +241,8 @@ export const applicationSecrets = [
 export function secretErrors(opts: Opts, event: string): string[] {
   const keys = [...new Set([
     ...(event==='validate'?credential_requirements(opts).map(name=>name.replace(/^COLORS_PAR_/,'').toLowerCase().replaceAll('_','-')):[]),
-    ...dnsSecrets,
-    ...(event === "create" ? applicationSecrets : []),
+    ...(opts["provider-dns"] === "none" ? [] : dnsSecrets),
+    ...(event === "create" && !opts["automq-storage-managed"] ? applicationSecrets : []),
     ...backendSecrets(opts),
   ])];
   return keys.filter((key) => missing(opts[key]))

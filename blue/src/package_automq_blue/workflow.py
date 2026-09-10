@@ -9,12 +9,14 @@ from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
 from blue.workflow import advice_add, failed, workflow
 from colors_compute.inspection import read_deployment
+from colors_compute import finalize_backend
 
-from . import cluster, ssh, ssh_config, tools, validate
+from . import cluster, ssh, ssh_config, tools, validate, storage
 
 DEFAULTS = {
     "provider-compute": validate.default_compute_provider,
     "provider-dns": "cloudflare",
+    "automq-tls-mode": "acme",
     "provider-backend": "r2",
     "compute-prevent-destroy": True,
     "workdir": ".colors",
@@ -48,6 +50,8 @@ async def start_step(original, env=None):
     async def after(opts, _env, context):
         if context['real'] and context['event'] == 'delete':
             result = await read_deployment(opts, environment)
+            if result['status'] != 'present' and opts.get('s3-bucket-mode') == 'managed':
+                return {**opts, 'automq/finalize-only': True, 'blue/exit': 0}
             if result['status'] == 'destroyed':
                 return {**opts, 'automq/already-destroyed': True, 'blue/exit': 0}
             if result['status'] != 'present':
@@ -89,12 +93,15 @@ def wire_fn(step: str, run_opts: dict):
             # DNS goes before the compute destroy: records pointing at addresses
             # that have been released are worse than no records, because a
             # reissued address makes them point at somebody else's machine.
-            "automq/dns": (tools.dns_step, "automq/infrastructure"),
-            "automq/infrastructure": (tools.infrastructure_step,),
+            "automq/dns": (tools.dns_step, "automq/storage" if run_opts.get("automq-storage-managed") else "automq/infrastructure"),
+            "automq/storage": (storage.storage_step, "automq/infrastructure"),
+            "automq/infrastructure": (tools.infrastructure_step, "automq/backend-finalize") if run_opts.get("s3-bucket-mode") == "managed" else (tools.infrastructure_step,),
+            "automq/backend-finalize": (backend_finalize_step,),
         }.get(step)
     return {
         "automq/start": (start_step, "automq/infrastructure"),
-        "automq/infrastructure": (tools.infrastructure_step, "automq/ssh-config"),
+        "automq/infrastructure": (tools.infrastructure_step, "automq/storage" if run_opts.get("automq-storage-managed") else "automq/ssh-config"),
+        "automq/storage": (storage.storage_step, "automq/ssh-config"),
         "automq/ssh-config": (tools.ansible_local_step, "automq/dns"),
         # DNS before convergence, because every broker advertises a name that
         # must already resolve — and because the certificate is issued for those
@@ -112,13 +119,34 @@ def backend_advice(tool: str):
 
 
 side_effecting = ["automq/infrastructure", "automq/dns", "automq/ssh-config",
-                  "automq/ansible", "automq/acceptance", "automq/ssh-cleanup"]
+                  "automq/ansible", "automq/acceptance", "automq/ssh-cleanup", "automq/storage", "automq/backend-finalize"]
+
+
+async def backend_finalize_step(opts):
+    try:
+        result = await finalize_backend(opts, {**os.environ, **storage.aws_env(opts)})
+        if result["status"] in ("skipped", "absent", "destroyed"):
+            return {**opts, "blue/exit": 0}
+        return {**opts, "blue/exit": 1, "blue/err": "managed backend finalization failed"}
+    except Exception:
+        return {**opts, "blue/exit": 1, "blue/err": "managed backend finalization failed; inspect ownership and remaining state"}
+
+
+def next_steps(step, successors, opts):
+    if failed(opts):
+        return []
+    if opts.get("automq/already-destroyed"):
+        return []
+    if step == "automq/start" and opts.get("automq/finalize-only"):
+        return [("automq/backend-finalize", opts)]
+    return [(successor, opts) for successor in successors or []]
 
 
 def create_workflow():
-    wf = workflow(start="automq/start", wire_fn=wire_fn, next_fn=lambda step, successors, opts: [] if opts.get('automq/already-destroyed') or failed(opts) else [(successor, opts) for successor in successors or []])
+    wf = workflow(start="automq/start", wire_fn=wire_fn, next_fn=next_steps)
     wf = advice_add(wf, "automq/dns", "before", "automq.workflow/backend",
                     backend_advice(tools.dns_tool))
+    wf = advice_add(wf, "automq/storage", "before", "automq.workflow/storage-backend", backend_advice(storage.tool))
     return dry_run.advise(progress.advise(wf), side_effecting)
 
 

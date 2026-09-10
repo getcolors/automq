@@ -32,7 +32,7 @@ services:
     healthcheck:
       # Asks the broker a question rather than trusting the process table: a
       # JVM that is up but cannot serve metadata is not a healthy broker.
-      test: ["CMD-SHELL", "/opt/automq/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server {{ automq_vpc_ip }}:9094 --command-config /etc/automq/admin.properties >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx256m /opt/automq/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server {{ automq_vpc_ip }}:9094 --command-config /etc/automq/admin.properties >/dev/null 2>&1"]
       interval: 30s
       timeout: 20s
       retries: 10

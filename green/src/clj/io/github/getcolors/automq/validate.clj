@@ -33,7 +33,7 @@
    :automq-data-r2-bucket :automq-ops-r2-bucket
    :automq-r2-endpoint :automq-r2-region
    :automq-wal-batch-interval-ms :automq-wal-max-bytes-in-batch
-   :r2-bucket :r2-endpoint])
+   ])
 
 (def host-re #"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
 (def email-re #"^[^@\s]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
@@ -68,11 +68,17 @@
   [opts]
   (vec
    (concat
-    (for [k required
+    (for [k (concat required (case (:provider-backend opts) "r2" [:r2-bucket :r2-endpoint] "s3" [:s3-bucket :s3-region] []))
           :when (missing? (get opts k))]
       (str k " is required"))
-    (when-not (= "cloudflare" (:provider-dns opts))
-      [":provider-dns must be cloudflare"])
+    (when-not (contains? #{"cloudflare" "none"} (:provider-dns opts))
+      [":provider-dns must be cloudflare or none"])
+    (when-not (contains? #{"acme" "private-ca"} (get opts :automq-tls-mode "acme"))
+      [":automq-tls-mode must be acme or private-ca"])
+    (when (and (= "private-ca" (:automq-tls-mode opts)) (not= "none" (:provider-dns opts)))
+      [":automq-tls-mode private-ca requires :provider-dns none"])
+    (when (and (= "none" (:provider-dns opts)) (not= "private-ca" (:automq-tls-mode opts)))
+      [":provider-dns none requires :automq-tls-mode private-ca"])
     (when-not (contains? #{"s3" "r2"} (:provider-backend opts))
       [":provider-backend must be s3 or r2"])
     ;; boolean?, not true?. The guard is lifted for exactly one run by
@@ -150,6 +156,12 @@
         ["the client, admin, broker and controller principals must all differ"]))
 
     ;; --- object storage
+    (when (and (contains? opts :automq-storage-managed) (not (boolean? (:automq-storage-managed opts))))
+      [":automq-storage-managed must be true or false"])
+    (when (and (:automq-storage-managed opts) (not= "s3" (:automq-storage-provider opts)))
+      ["managed storage requires :automq-storage-provider s3"])
+    (when (and (:automq-storage-managed opts) (= "auto" (:automq-r2-region opts)))
+      ["managed S3 storage requires an AWS region in :automq-r2-region"])
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
                      (not (re-matches bucket-re (str (get opts k)))))]
@@ -165,7 +177,7 @@
     ;; is not a style question.
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
-                     (= (str (get opts k)) (str (:r2-bucket opts))))]
+                     (= (str (get opts k)) (str (get opts (if (= "s3" (:provider-backend opts)) :s3-bucket :r2-bucket)))))]
       (str k " must not be the OpenTofu state bucket: AutoMQ writes keys at the bucket root"))
     (for [k [:automq-r2-endpoint]
           :when (and (not (missing? (get opts k)))
@@ -209,8 +221,8 @@
   would be a lock on the exit."
   [opts event]
   (let [ks (concat (map #(keyword (str/replace (str/lower-case (subs % 11)) "_" "-")) (when (= :validate event) (compute/credential-requirements opts)))
-                   dns-secrets
-                   (when (= :create event) application-secrets)
+                   (when-not (= "none" (:provider-dns opts)) dns-secrets)
+                   (when (and (= :create event) (not (:automq-storage-managed opts))) application-secrets)
                    (backend-secrets opts))]
     (for [k (distinct ks) :when (missing? (get opts k))]
       (str "required credential is not set: " (green-cli/par-name k)))))

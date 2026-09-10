@@ -1,16 +1,18 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["package-automq-blue", "blue", "colors-compute-blue"]
+# dependencies = ["package-automq-blue", "blue"]
 #
 # [tool.uv.sources]
-# colors-compute-blue = { git = "https://github.com/getcolors/colors-compute.git", rev = "5040d93672b9f10e7861f527ea552177369c6851", subdirectory = "blue" }
 # package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "a85f8233e1a054abd1122172e2d3097c5c089697", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 #
 # [tool.uv]
 # override-dependencies = ["blue @ git+https://github.com/getcolors/blue.git@290f313ead5ca162875c33a049c880da017eae09"]
 # ///
+#
+# Compute resolves through the immutable AutoMQ package dependency. A second
+# compute pin here would conflict before AUTOMQ_LIB_ROOT can be dispatched.
 #
 # Managed by `bb pin` — do not edit by hand, and never invent a SHA.
 #

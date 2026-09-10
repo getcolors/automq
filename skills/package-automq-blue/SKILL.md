@@ -30,8 +30,9 @@ quorum, partition failover, and throughput.
 - Use `build` and `create --dry-run` before a real lifecycle operation.
 - Keep `compute-prevent-destroy: true`. Destroying requires a deliberate
   one-run override of that guard.
-- `delete` never touches the object storage buckets. They hold the cluster's
-  data, and an accidental `delete` must stay recoverable.
+- `delete` retains adopted object storage. With `automq-storage-managed: true`,
+  it deletes the S3 data and ops buckets and their contents after stopping the
+  brokers. A managed S3 backend bucket is deleted last, after retirement checks.
 - The two buckets must be **empty** at first adoption and belong to this
   deployment alone. AutoMQ writes hash-prefixed keys at the bucket root and
   supports no path prefix, so it cannot share a bucket with anything.

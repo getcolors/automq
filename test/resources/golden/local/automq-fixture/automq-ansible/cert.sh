@@ -31,6 +31,33 @@ IFS=',' read -ra parts <<< "$NAMES"
 domains=()
 for d in "${parts[@]}"; do domains+=(-d "$d"); done
 
+# A private CA is an explicit alternative for deployments without a DNS zone.
+# The CA private key stays on the issuer; only its public certificate is exported.
+if [ 'acme' = private-ca ]; then
+  ca=/etc/automq/ca
+  install -d -m 0700 "$ca"
+  if [ ! -s "$ca/ca.key" ] || [ ! -s "$ca/ca.crt" ]; then
+    published=$("$STORE" tls-fingerprint)
+    [ -z "$published" ] || { echo 'cert: restore the existing issuer CA before renewing' >&2; exit 1; }
+    openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 3650 \
+      -keyout "$ca/ca.key" -out "$ca/ca.crt" -subj '/CN=AutoMQ automq-fixture CA' \
+      -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+  fi
+  crt="$ca/fullchain.pem"
+  key="$ca/server.key"
+  if [ ! -s "$crt" ] || ! openssl x509 -noout -checkend 2592000 -in "$crt" >/dev/null 2>&1 \
+      || [ "$(cat "$ca/names" 2>/dev/null || true)" != "$NAMES" ]; then
+    san=''
+    for address in "${parts[@]}"; do san="${san:+$san,}IP:$address"; done
+    printf 'subjectAltName=%s\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' "$san" > "$ca/server.ext"
+    openssl req -new -newkey rsa:3072 -nodes -sha256 -keyout "$key" -out "$ca/server.csr" \
+      -subj '/CN=AutoMQ automq-fixture' >/dev/null 2>&1
+    openssl x509 -req -in "$ca/server.csr" -CA "$ca/ca.crt" -CAkey "$ca/ca.key" \
+      -CAcreateserial -out "$ca/server.crt" -days 90 -sha256 -extfile "$ca/server.ext" >/dev/null 2>&1
+    cat "$ca/server.crt" "$ca/ca.crt" > "$crt"
+    printf '%s' "$NAMES" > "$ca/names"
+  fi
+else
 # --dns.propagation.disable-rns: lego otherwise polls the zone's authoritative
 # nameservers itself and refuses to proceed until every one agrees, which is a
 # check Cloudflare's anycast estate does not satisfy the way lego expects.
@@ -50,6 +77,8 @@ elif ! openssl x509 -noout -checkend 2592000 -in "$crt" >/dev/null 2>&1; then
     "${domains[@]}" "${common[@]}" >&2
 else
   echo "cert: current certificate is valid for more than 30 days"
+fi
+
 fi
 
 [ -s "$crt" ] && [ -s "$key" ] || { echo "cert: no certificate material at $crt" >&2; exit 1; }

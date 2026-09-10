@@ -52,7 +52,7 @@
     (let [automq (lib-coord "AUTOMQ_LIB_ROOT" automq-git-url automq-sha "green")
           green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)
           once (lib-coord "ONCE_LIB_ROOT" once-git-url nil "green")
-          compute (lib-coord "COLORS_COMPUTE_LIB_ROOT" "https://github.com/getcolors/colors-compute.git" "5040d93672b9f10e7861f527ea552177369c6851" "green")]
+          compute (lib-coord "COLORS_COMPUTE_LIB_ROOT" "https://github.com/getcolors/colors-compute.git" "87ec5661fc8807159419d90d437247f3503469c7" "green")]
       (if-not automq
         (str "this launcher carries no automq pin.\n"
              "It has not been stamped by `bb pin`, which cannot run until the "
@@ -120,10 +120,10 @@
        "  build     render the work directory only — contact nothing\n"
        "  create    provision the cluster, converge it, and prove it works\n"
        "  delete    stop the cluster and destroy DNS and infrastructure\n"
-       "  validate  check desired state, tools, and Vultr access\n"
+       "  validate  check desired state, tools, and credentials\n"
        "\n"
-       "Object storage is never destroyed by `delete`: the buckets hold the\n"
-       "cluster's data, and emptying them is a separate, explicit action."))
+       "Adopted storage is retained by `delete`. Managed S3 buckets and their\n"
+       "data are deleted only after the destruction guard is explicitly lifted."))
 
 (defn run [& args]
   (let [args (vec args)

@@ -25,7 +25,7 @@
 (defn compute-name [opts] (get-in (requests opts) [:shared :name]))
 (defn machine-name [opts i] (get-in (requests opts) [:nodes i :name]))
 (defn machine-names [opts] (mapv #(machine-name opts %) (indexes opts)))
-(defn- automq-node [opts node] (-> node (dissoc :vpc_ip) (assoc :vpc-ip (:vpc_ip node) :broker-name (broker-name opts (:index node)))))
+(defn- automq-node [opts node] (-> node (dissoc :vpc_ip) (assoc :vpc-ip (:vpc_ip node) :broker-name (if (= "none" (:provider-dns opts)) (:ip node) (broker-name opts (:index node))))))
 (defn fallback-nodes [opts] (mapv #(automq-node opts %) (get-in (planning/plan-deployment opts (topology opts) (requirements opts)) [:cluster :nodes])))
 (defn nodes
   ([opts] (nodes opts (:colors-compute/cluster opts)))

@@ -8,7 +8,7 @@ BOOTSTRAP="${1:-<{ bootstrap-internal }>}"
 KAFKA=/opt/automq/kafka/bin
 ADMIN=/etc/automq/admin.properties
 
-k() { docker exec automq "$KAFKA/$@" 2>/dev/null; }
+k() { docker exec -e KAFKA_HEAP_OPTS=-Xmx256m automq "$KAFKA/$@" 2>/dev/null; }
 
 echo "container:"
 docker ps --filter name=automq --format '  {{.Status}}' || echo "  not running"

@@ -13,6 +13,7 @@ import {dirname} from "node:path";
 import * as cluster from "./cluster.ts";
 import * as sshConfig from "./ssh-config.ts";
 import * as validate from "./validate.ts";
+import * as storage from "./storage.ts";
 
 
 import dnsMainTf from "../resources/tools/dns/main.tf" with { type: "text" };
@@ -126,6 +127,7 @@ export function dnsJson(opts: Opts, list: cluster.Node[]): string {
 }
 
 export async function dnsStep(opts: Opts): Promise<Opts> {
+  if (opts["provider-dns"] === "none") return {...opts, "red/exit":0};
   const dir = toolDir(opts, dnsTool);
   const list = nodes(opts);
   const data: Opts = { ...opts, "automq-zone": zone(opts) };
@@ -248,16 +250,19 @@ export function inventory(opts: Opts, list: cluster.Node[]): string {
 // process that needs it: not in `.colors/`, not in a golden, not in this map.
 export function ansibleData(opts: Opts): Opts {
   const list = nodes(opts);
+  opts = {...opts};
+  delete opts["automq/storage-credentials"];
+  const names = opts["provider-dns"] === "none" ? list.map(node => node.ip) : cluster.certificateNames(opts);
   return {
     ...opts,
     "ssh-keygen": validate.keygen(opts) || Boolean(opts["ssh-private-key-path"]),
     "node-count": cluster.nodeCount(opts),
     "quorum-voters": cluster.quorumVoters(opts, list),
-    "certificate-names": cluster.certificateNames(opts),
-    "certificate-names-csv": cluster.certificateNames(opts).join(","),
+    "certificate-names": names,
+    "certificate-names-csv": names.join(","),
     "bootstrap-internal": list.map((node) =>
       `${node["vpc-ip"]}:${cluster.internalPort(opts)}`).join(","),
-    "bootstrap-external": `${opts["automq-host"]}:${cluster.kafkaPort(opts)}`,
+    "bootstrap-external": `${opts["provider-dns"] === "none" ? list[0]!.ip : opts["automq-host"]}:${cluster.kafkaPort(opts)}`,
     "admin-user": cluster.adminUser(opts),
     "broker-user": cluster.brokerUser(opts),
     "controller-user": cluster.controllerUser(opts),
@@ -315,6 +320,11 @@ export async function ansibleStep(opts: Opts): Promise<Opts> {
     // failed closed at adoption.)
     return { ...opts, "red/exit": 0 };
   }
+  if (storage.managed(opts) && opts["red/event"] === "create") {
+    const rendered = scaffold(opts, ansibleSpecs(opts));
+    const result = await runtime.exec(["ansible-playbook", "-i", "inventory.json", "main.yml"], {cwd:dir, env:storage.credentialEnv(opts), timeoutMs:7200000});
+    return result.exit === 0 ? {...rendered, "red/exit":0, "ansible/recap":ansible.parseRecap(result.out)} : {...rendered, "red/exit":1, "red/err":"Ansible convergence failed: " + result.out + result.err};
+  }
   return ansible.ansibleWithSpec(opts, {
     dir,
     inventory: "inventory.json",
@@ -366,6 +376,7 @@ export async function acceptanceStep(opts: Opts): Promise<Opts> {
   if (opts["red/event"] !== "create") return rendered;
   const result = await runtime.exec(
     ["bash", `${toolDir(opts, acceptanceTool)}/acceptance.sh`], { timeoutMs: 2700000 });
+  if (result.out) process.stdout.write(result.out);
   return processResult(rendered, "acceptance", result);
 }
 

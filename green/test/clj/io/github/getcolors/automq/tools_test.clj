@@ -1,6 +1,8 @@
 (ns io.github.getcolors.automq.tools-test
   (:require [cheshire.core :as json]
             [green.tofu :as tofu]
+            [green.process :as process]
+            [green.scaffold :as scaffold]
             [io.github.getcolors.automq.validate :as validate]
             [clojure.string]
             [clojure.test :refer [deftest is testing]]
@@ -91,3 +93,11 @@
     (is (= {"AWS_ACCESS_KEY_ID" "synthetic-id" "AWS_SECRET_ACCESS_KEY" "synthetic-secret" "CLOUDFLARE_API_TOKEN" "synthetic-dns"} @captured))
     (is (= environment (into {} (System/getenv))))
     (is (= {} (validate/tofu-env values :provider-compute)))))
+
+(deftest acceptance-emits-public-gate-measurements
+  (let [result (atom nil)]
+    (with-redefs [scaffold/scaffold (fn [opts _] opts)
+                  process/run-with-timeout (fn [& _] {:exit 0 :out "acceptance: 18 passed, 0 failed\n" :err ""})]
+      (is (= "acceptance: 18 passed, 0 failed\n"
+             (with-out-str (reset! result (tools/acceptance-step (assoc applied :green/event :create))))))
+      (is (= 0 (:green/exit @result))))))

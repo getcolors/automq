@@ -98,6 +98,8 @@ grep -q 'package_automq_blue' "$blue" || fail 'blue does not resolve its library
 grep -qE '^# (dependencies = \[\]|package-automq-blue = \{ git = "https://github.com/getcolors/automq.git", rev = "[0-9a-f]{40}", subdirectory = "blue" \})$' "$blue" \
   || fail 'invalid blue pin site'
 ok 'blue has one managed immutable pin site'
+! rg -q '^# .*colors-compute-blue' "$blue" || fail 'blue duplicates the package compute dependency'
+ok 'blue inherits compute from its immutable package dependency'
 
 mkdir "$tmp/blue-project"
 cp "$blue" "$tmp/blue-project/blue"; chmod +x "$tmp/blue-project/blue"

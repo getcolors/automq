@@ -100,7 +100,7 @@ else
   echo "format: replacement node, credentials come from the quorum"
 fi
 
-docker run --rm \
+docker run --rm -e KAFKA_HEAP_OPTS=-Xmx256m \
   -v /etc/automq/server.properties:"$CONTAINER_CONFIG":ro \
   -v /var/lib/automq:/var/lib/automq \
   --entrypoint "$KAFKA/kafka-storage.sh" \
