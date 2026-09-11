@@ -30,7 +30,13 @@
   tasks:
     # ---------------------------------------------------------------- host
 
-    - name: Install base packages
+<% if automq-apt-security-mirror %>    - name: Configure the Ubuntu security repository mirror
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list.d/ubuntu.sources
+        regexp: '(?m)^URIs: [^\n]+(?=\nSuites: [^\n]*-security(?:[ \t]|$))'
+        replace: 'URIs: <{ automq-apt-security-mirror }>'
+
+<% endif %>    - name: Install base packages
       ansible.builtin.apt:
         name:
           - ca-certificates

@@ -598,3 +598,8 @@ test('DNS alone receives R2 backend credential environment',async()=>{
 test('compute credentials are checked by lifecycle after state, not application start',()=>{
  const opts=fixture();expect(validate.secretErrors(opts,'create').some(e=>e.includes('VULTR_API_KEY'))).toBe(false);expect(validate.secretErrors(opts,'delete').some(e=>e.includes('VULTR_API_KEY'))).toBe(false);expect(validate.secretErrors(opts,'validate').some(e=>e.includes('VULTR_API_KEY'))).toBe(true);
 });
+
+test("optional security mirror rejects configuration injection", () => {
+  for (const url of ["http://us-central1.gce.archive.ubuntu.com/ubuntu/","https://security.ubuntu.com/ubuntu"]) expect(validate.stateErrors(fixture({"automq-apt-security-mirror":url}))).toEqual([]);
+  for (const url of ["","file:///tmp/repo","https://mirror/ubuntu\n","https://mirror/ubuntu'","https://mirror/{{ bad }}"]) expect(validate.stateErrors(fixture({"automq-apt-security-mirror":url})).some(error => error.includes("automq-apt-security-mirror"))).toBe(true);
+});

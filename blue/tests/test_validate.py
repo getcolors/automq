@@ -120,3 +120,10 @@ async def test_tools_are_checked_without_touching_the_network():
         return Result(1) if args[-1] == "curl" else Result(0)
 
     assert any("curl" in e for e in await validate.runtime_errors(fixture(), runner))
+
+
+def test_optional_security_mirror_rejects_configuration_injection():
+    for url in ["http://us-central1.gce.archive.ubuntu.com/ubuntu/", "https://security.ubuntu.com/ubuntu"]:
+        assert errors({**fixture(), "automq-apt-security-mirror": url}) == []
+    for url in ["", "file:///tmp/repo", "https://mirror/ubuntu\n", "https://mirror/ubuntu'", "https://mirror/{{ bad }}"]:
+        assert matching({**fixture(), "automq-apt-security-mirror": url}, "automq-apt-security-mirror")

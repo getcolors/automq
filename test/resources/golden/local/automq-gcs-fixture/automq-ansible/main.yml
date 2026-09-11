@@ -30,6 +30,12 @@
   tasks:
     # ---------------------------------------------------------------- host
 
+    - name: Configure the Ubuntu security repository mirror
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list.d/ubuntu.sources
+        regexp: '(?m)^URIs: [^\n]+(?=\nSuites: [^\n]*-security(?:[ \t]|$))'
+        replace: 'URIs: http://us-central1.gce.archive.ubuntu.com/ubuntu/'
+
     - name: Install base packages
       ansible.builtin.apt:
         name:

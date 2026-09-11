@@ -108,3 +108,10 @@
   (doseq [event [:create :delete]]
     (is (not-any? #(str/includes? % "VULTR_API_KEY") (validate/secret-errors base event))))
   (is (some #(str/includes? % "VULTR_API_KEY") (validate/secret-errors base :validate))))
+
+(deftest security-mirror-url-is-optional-and-rejects-template-injection
+  (doseq [url ["http://us-central1.gce.archive.ubuntu.com/ubuntu/" "https://security.ubuntu.com/ubuntu"]]
+    (is (empty? (validate/state-errors (assoc base :automq-apt-security-mirror url)))))
+  (doseq [url ["" "file:///tmp/repo" "https://mirror/ubuntu\n" "https://mirror/ubuntu'" "https://mirror/{{ bad }}"]]
+    (is (some #(str/includes? % "automq-apt-security-mirror")
+              (validate/state-errors (assoc base :automq-apt-security-mirror url))))))

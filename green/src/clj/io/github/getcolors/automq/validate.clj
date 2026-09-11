@@ -117,6 +117,10 @@
                   (re-matches email-re (str (:automq-letsencrypt-email opts))))
       [":automq-letsencrypt-email must be an email address"])
 
+    (when (and (contains? opts :automq-apt-security-mirror)
+               (not (re-matches #"^https?://[a-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._~/-]+$" (str (:automq-apt-security-mirror opts)))))
+      [":automq-apt-security-mirror must be an HTTP or HTTPS repository URL"])
+
     ;; --- image
     (when-not (or (missing? (:automq-image opts))
                   (re-matches image-re (str (:automq-image opts))))

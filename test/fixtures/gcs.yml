@@ -4,6 +4,7 @@ workdir: WORKDIR
 provider-compute: google
 provider-dns: none
 automq-tls-mode: private-ca
+automq-apt-security-mirror: http://us-central1.gce.archive.ubuntu.com/ubuntu/
 provider-backend: gcs
 compute-prevent-destroy: true
 

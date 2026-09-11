@@ -161,3 +161,12 @@ The normal `compute-prevent-destroy` guard still applies.
 
 GCS ownership markers and restart leases use `x-goog-if-generation-match`.
 GCS does not accept S3 ETag write preconditions as the same contract.
+
+## Ubuntu security repository mirror
+
+`automq-apt-security-mirror` optionally selects an HTTP or HTTPS mirror before
+base package installation. It updates the `URIs` line directly above the
+security `Suites` line in `/etc/apt/sources.list.d/ubuntu.sources`. The task
+preserves the security suite, components and Ubuntu archive signing key.
+Omit this option to retain the image's repository configuration. Use a mirror
+that serves signed metadata for the selected Ubuntu security suite.

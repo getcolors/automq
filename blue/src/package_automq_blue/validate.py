@@ -108,6 +108,8 @@ def state_errors(opts: dict) -> list[str]:
         errors.append(":provider-dns none requires :automq-tls-mode private-ca")
     if opts.get("automq-tls-mode") == "private-ca" and opts.get("provider-dns") != "none":
         errors.append(":automq-tls-mode private-ca requires :provider-dns none")
+    if "automq-apt-security-mirror" in opts and not re.fullmatch(r"https?://[a-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._~/-]+", str(opts["automq-apt-security-mirror"])):
+        errors.append(":automq-apt-security-mirror must be an HTTP or HTTPS repository URL")
     if opts.get("provider-backend") not in ("s3", "r2", "gcs"):
         errors.append(":provider-backend must be s3, r2 or gcs")
     # A boolean, not `True`. The guard is lifted for exactly one run by

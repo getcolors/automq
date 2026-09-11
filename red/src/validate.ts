@@ -88,6 +88,7 @@ export function stateErrors(opts: Opts): string[] {
   if (!["acme", "private-ca"].includes(opts["automq-tls-mode"] ?? "acme")) errors.push(":automq-tls-mode must be acme or private-ca");
   if (opts["provider-dns"] === "none" && opts["automq-tls-mode"] !== "private-ca") errors.push(":provider-dns none requires :automq-tls-mode private-ca");
   if (opts["automq-tls-mode"] === "private-ca" && opts["provider-dns"] !== "none") errors.push(":automq-tls-mode private-ca requires :provider-dns none");
+  if ("automq-apt-security-mirror" in opts && !/^https?:\/\/[a-z0-9.-]+(?::[0-9]+)?\/[A-Za-z0-9._~/-]+$(?![\s\S])/.test(String(opts["automq-apt-security-mirror"]))) errors.push(":automq-apt-security-mirror must be an HTTP or HTTPS repository URL");
   if (!["s3", "r2", "gcs"].includes(String(opts["provider-backend"]))) {
     errors.push(":provider-backend must be s3, r2 or gcs");
   }
