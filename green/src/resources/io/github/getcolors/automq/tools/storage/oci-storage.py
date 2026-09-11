@@ -14,6 +14,17 @@ def run(args, allow_absent_state=False):
     return result.stdout
 
 
+def list_data(args):
+    # OCI CLI emits no JSON for an empty successful paginated list.
+    raw = run(args)
+    if not raw.strip():
+        return []
+    data = json.loads(raw)['data']
+    if not isinstance(data, list):
+        raise RuntimeError('OCI listing returned an invalid data collection')
+    return data
+
+
 def operate(action, opts):
     if action not in ('preflight', 'cleanup'):
         raise ValueError('unknown OCI storage operation')
@@ -40,7 +51,7 @@ def operate(action, opts):
             raise RuntimeError('OCI bucket identity changed from its recorded state')
         if action == 'preflight' and not owned:
             if listed is None:
-                listed = json.loads(run(base + ['os', 'bucket', 'list', '--compartment-id', opts['oci-compartment-id'], '--all'] + location))['data']
+                listed = list_data(base + ['os', 'bucket', 'list', '--compartment-id', opts['oci-compartment-id'], '--all'] + location)
             if any(bucket['name'] == name for bucket in listed):
                 raise RuntimeError('managed storage refuses to adopt an existing OCI bucket')
         if action == 'cleanup' and owned:
@@ -56,7 +67,7 @@ def operate(action, opts):
                     or tags.get('colors-profile') != opts['profile']
                     or tags.get('colors-owner') != 'automq-storage'):
                 raise RuntimeError('live OCI bucket identity or ownership does not match state')
-            uploads = json.loads(run(base + ['os', 'multipart', 'list', '--all'] + bucket_args))['data']
+            uploads = list_data(base + ['os', 'multipart', 'list', '--all'] + bucket_args)
             for upload in uploads:
                 run(base + ['os', 'multipart', 'abort', '--object-name', upload['object'], '--upload-id', upload['upload-id'], '--force'] + bucket_args)
             deleted = json.loads(run(base + ['os', 'object', 'bulk-delete', '--force'] + bucket_args))

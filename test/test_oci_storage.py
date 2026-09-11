@@ -13,7 +13,7 @@ OPTS = {'profile': 'automq-test', 'oci-config-file-profile': 'DEFAULT', 'automq-
 
 
 class Ownership(unittest.TestCase):
-    def run_case(self, action, resources=None, listed=None, failures=None, guard=False, live_changes=None):
+    def run_case(self, action, resources=None, listed=None, failures=None, guard=False, live_changes=None, empty_list_output=False):
         calls = []
         def run(args, **kwargs):
             calls.append(args)
@@ -26,6 +26,8 @@ class Ownership(unittest.TestCase):
             if 'bulk-delete' in args:
                 return json.dumps({'delete-failures': failures or {}})
             if 'list' in args:
+                if empty_list_output:
+                    return ''
                 return json.dumps({'data': listed or []})
             return ''
         with patch.object(module, 'run', side_effect=run):
@@ -39,6 +41,20 @@ class Ownership(unittest.TestCase):
         calls = self.run_case('preflight')
         self.assertEqual(sum('bucket' in c and 'list' in c for c in calls), 1)
         self.assertTrue(any('--all' in c for c in calls))
+
+    def test_empty_successful_cli_listing_and_multipart_cleanup(self):
+        self.run_case('preflight', empty_list_output=True)
+        calls = self.run_case('cleanup', resources=[self.owned()], empty_list_output=True)
+        self.assertTrue(any('bulk-delete' in call for call in calls))
+
+    def test_failed_or_malformed_listing_does_not_prove_absence(self):
+        with patch.object(module, 'run', side_effect=RuntimeError('CLI denied')):
+            with self.assertRaisesRegex(RuntimeError, 'CLI denied'):
+                module.list_data(['oci', 'list'])
+        for value in ['{}', '{"data": null}', 'invalid']:
+            with patch.object(module, 'run', return_value=value):
+                with self.assertRaises((KeyError, ValueError, RuntimeError)):
+                    module.list_data(['oci', 'list'])
 
     def test_foreign_bucket_refused(self):
         with self.assertRaisesRegex(RuntimeError, 'adopt'):
