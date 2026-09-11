@@ -170,7 +170,7 @@ async def ansible_local_step(opts: dict) -> dict:
         dir=dir, inventory="inventory.ini",
         playbooks={"create": "main.yml", "delete": "main.yml"},
         extra_vars={"host_alias": ssh_config.host_alias(opts),
-                    "ssh_hosts": ssh_config_hosts(opts, nodes(opts)),
+                    "ssh_hosts": [] if delete else ssh_config_hosts(opts, nodes(opts)),
                     "block_state": "absent" if delete else "present"})
 
 

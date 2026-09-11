@@ -50,10 +50,12 @@ async def start_step(original, env=None):
     async def after(opts, _env, context):
         if context['real'] and context['event'] == 'delete':
             result = await read_deployment(opts, environment)
-            if result['status'] != 'present' and opts.get(str(opts.get('provider-backend')) + '-bucket-mode') == 'managed':
+            if result['status'] in ('absent', 'destroyed') and opts.get(str(opts.get('provider-backend')) + '-bucket-mode') == 'managed':
                 return {**opts, 'automq/finalize-only': True, 'blue/exit': 0}
             if result['status'] == 'destroyed':
                 return {**opts, 'automq/already-destroyed': True, 'blue/exit': 0}
+            if result['status'] == 'partial':
+                return {**opts, 'blue/exit': 0}
             if result['status'] != 'present':
                 return {**opts, 'blue/exit': 1, 'blue/err': 'compute state unavailable; legacy monolithic state requires explicit migration'}
             opts = {**opts, 'colors-compute/cluster': result['cluster']}

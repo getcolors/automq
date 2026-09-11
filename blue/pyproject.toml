@@ -6,11 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "blue",
     "package-once-blue",
-    "colors-compute-blue @ git+https://github.com/getcolors/colors-compute.git@c6e7b486c631e620d457db39c8c7143510c12897#subdirectory=blue",
+    "colors-compute-blue @ git+https://github.com/getcolors/colors-compute.git@bd82520abcfaf4a0adab26bc41ffe7715905928d#subdirectory=blue",
 ]
 
 [tool.uv.sources]
-colors-compute-blue = { git = "https://github.com/getcolors/colors-compute.git", subdirectory = "blue", rev = "c6e7b486c631e620d457db39c8c7143510c12897" }
+colors-compute-blue = { git = "https://github.com/getcolors/colors-compute.git", subdirectory = "blue", rev = "bd82520abcfaf4a0adab26bc41ffe7715905928d" }
 blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 package-once-blue = { git = "https://github.com/getcolors/once.git", subdirectory = "blue", rev = "10e525ae7c37130ab4d532b91c8d2ead94557cc8" }
 

@@ -38,7 +38,7 @@
                   if mode not in ('present', 'absent') or type(payload.get('keygen')) is not bool:
                       raise ValueError('invalid SSH block request')
                   hosts = payload.get('ssh_hosts')
-                  if not isinstance(hosts, list) or not hosts or len(hosts) > 1001:
+                  if not isinstance(hosts, list) or (mode == 'present' and not hosts) or len(hosts) > 1001:
                       raise ValueError('invalid SSH host inventory')
                   aliases = set()
                   for host in hosts:
@@ -56,7 +56,7 @@
                           raise ValueError('invalid SSH user')
                       if not isinstance(address, str) or str(ipaddress.ip_address(address)) != address:
                           raise ValueError('invalid SSH address')
-                  if profile.lower() not in aliases:
+                  if hosts and profile.lower() not in aliases:
                       raise ValueError('missing SSH entry alias')
                   legacy = payload.get('legacy_marker_prefix', '')
                   if not isinstance(legacy, str) or (legacy and not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', legacy)):

@@ -10,6 +10,7 @@ compute-prevent-destroy: true
 
 automq-storage-provider: oci
 automq-storage-managed: true
+automq-oci-user-email: automq-oci-storage@example.com
 automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
 automq-node-count: 3
 automq-cluster-id: bzC0Rv_0SBuO0ykEvTn1sg
@@ -40,9 +41,10 @@ oci-namespace: example
 oci-tenancy-id: ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 oci-compartment-id: ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 oci-subnet-id: ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-oci-availability-domain: XquT:EU-FRANKFURT-1-AD-1
+oci-availability-domain: EXAMPLE:EU-FRANKFURT-1-AD-1
+oci-availability-domains: [EXAMPLE:EU-FRANKFURT-1-AD-1, EXAMPLE:EU-FRANKFURT-1-AD-2, EXAMPLE:EU-FRANKFURT-1-AD-3]
 oci-shape: VM.Standard.A2.Flex
-oci-ocpus: 1
+oci-vcpus: 2
 oci-boot-volume-size-in-gbs: 50
 oci-boot-volume-vpus-per-gb: 10
 oci-image-id: ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

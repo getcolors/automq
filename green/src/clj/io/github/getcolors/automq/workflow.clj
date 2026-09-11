@@ -60,10 +60,11 @@
         (cond
           (and real? (= event :delete))
           (let [result (inspection/read-deployment opts (into {} env))]
-            (if (and (= "managed" (get opts (keyword (str (:provider-backend opts) "-bucket-mode")))) (not= "present" (:status result)))
+            (if (and (= "managed" (get opts (keyword (str (:provider-backend opts) "-bucket-mode")))) (contains? #{"absent" "destroyed"} (:status result)))
               (assoc opts :automq/finalize-only true :green/exit 0)
             (case (:status result)
               "destroyed" (assoc opts :automq/already-destroyed true :green/exit 0)
+              "partial" (assoc opts :green/exit 0)
               "present" (cond-> (assoc opts :colors-compute/cluster (:cluster result) :green/exit 0)
                           (get-in result [:key :private_key_path]) (assoc :ssh-private-key-path (get-in result [:key :private_key_path])))
               (assoc opts :green/exit 1 :green/err "compute state unavailable; legacy monolithic state requires explicit migration"))))

@@ -41,7 +41,12 @@ Before genesis, the OCI storage gate proves conditional create and native
 replacement, including stale ETag rejection. It waits at most 900 seconds for
 new credentials to propagate. See
 [the OCI configuration contract](references/configuration.md#managed-oci-object-storage)
-before changing credentials, endpoints or lease behavior.
+before changing credentials, endpoints or lease behavior. The deployment
+evidence distinguishes storage checks from broker acceptance. The live OCI
+storage stage passed data and ops object roundtrips, denied access to the
+existing state bucket, and passed lease takeover and stale-release checks.
+VM launches failed with regional capacity and shape errors, so the OCI run
+has not passed broker acceptance.
 
 The default TLS mode uses Cloudflare DNS-only records and ACME. Node 0 issues
 one Let's Encrypt certificate covering every broker name and the bootstrap

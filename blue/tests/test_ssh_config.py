@@ -64,3 +64,38 @@ def test_the_refusal_is_reported_as_a_failed_step(monkeypatch, tmp_path):
     refused = ssh_config.preflight(opts)
     assert refused["blue/exit"] == 1
     assert "automq-vultr-1" in refused["blue/err"]
+
+
+def test_embedded_updater_removes_owned_block_without_host_inventory(tmp_path):
+    import json
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    import textwrap
+    roots = Path(__file__).resolve().parents[2]
+    plays = [roots / 'green/src/resources/io/github/getcolors/automq/tools/ansible-local/main.yml',
+             roots / 'red/resources/tools/ansible-local/main.yml',
+             roots / 'blue/src/package_automq_blue/resources/tools/ansible-local/main.yml']
+    for index, play in enumerate(plays):
+        source = textwrap.dedent(play.read_text().split('          - |\n', 1)[1].split('        stdin:', 1)[0])
+        home = tmp_path / str(index)
+        config = home / '.ssh/config'
+        config.parent.mkdir(parents=True)
+        retained = 'Host unrelated\n    User operator\n'
+        config.write_text('# BEGIN partial ANSIBLE MANAGED BLOCK\nHost partial\n    HostName 192.0.2.1\n# END partial ANSIBLE MANAGED BLOCK\n' + retained)
+        payload = {'host_alias': 'partial', 'keygen': True, 'block_state': 'absent', 'ssh_hosts': []}
+        def run(value):
+            return subprocess.run([sys.executable, '-c', source], input=json.dumps(value), text=True,
+                                  capture_output=True, env={**os.environ, 'HOME': str(home)}, timeout=5)
+        first = run(payload)
+        assert first.returncode == 0, first.stderr
+        assert first.stdout.strip() == 'changed' and config.read_text() == retained
+        assert run(payload).stdout.strip() == 'unchanged'
+        assert run({**payload, 'block_state': 'present'}).returncode != 0
+        assert run({**payload, 'host_alias': 'bad\nalias'}).returncode != 0
+        assert run({**payload, 'legacy_marker_prefix': 'bad\nmarker'}).returncode != 0
+        malformed = '# BEGIN partial ANSIBLE MANAGED BLOCK\nHost partial\n'
+        config.write_text(malformed)
+        assert run(payload).returncode != 0
+        assert config.read_text() == malformed

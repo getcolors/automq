@@ -56,7 +56,7 @@
     (is (= 0 (:green/exit (storage/step base))))))
 
 (deftest managed-delete-retries-go-straight-to-guarded-finalization
-  (doseq [status ["destroyed" "absent" "error"]]
+  (doseq [status ["destroyed" "absent"]]
     (let [finalized (atom 0)]
       (with-redefs [validate/runtime-errors (constantly [])
                     validate/secret-errors (constantly [])
@@ -114,3 +114,27 @@
                                 {:exit 0 :out ""})
                   tofu/tofu-with-spec (fn [run-opts _ _] (is (= 1 (count @calls))) (assoc run-opts :green/exit 0))]
       (is (= 0 (:green/exit (storage/step opts)))))))
+
+(deftest oci-service-user-requires-an-explicit-email
+  (let [opts (assoc managed :automq-storage-provider "oci"
+                   :oci-tenancy-id "tenancy" :oci-compartment-id "compartment"
+                   :oci-namespace "example" :oci-config-file-profile "DEFAULT"
+                   :automq-r2-region "eu-frankfurt-1"
+                   :automq-r2-endpoint "https://example.compat.objectstorage.eu-frankfurt-1.oraclecloud.com"
+                   :automq-oci-user-email "operator+automq@example.com")]
+    (is (empty? (validate/state-errors opts)))
+    (is (some #(str/includes? % "unique user email") (validate/state-errors (dissoc opts :automq-oci-user-email))))
+    (is (some #(str/includes? % ":automq-oci-user-email") (validate/state-errors (assoc opts :automq-oci-user-email "not-an-email"))))))
+
+(deftest partial-delete-cleans-application-before-compute-and-errors-refuse
+  (doseq [status ["partial" "error"]]
+    (let [calls (atom []) step (fn [name] (fn [opts] (swap! calls conj name) (assoc opts :green/exit 0)))]
+      (with-redefs [validate/runtime-errors (constantly []) validate/secret-errors (constantly [])
+                    io.github.getcolors.compute-inspection/read-deployment (fn [& _] {:status status})
+                    tools/ansible-step (step :ansible) tools/ansible-local-step (step :ssh-config)
+                    tools/dns-step (step :dns) storage/step (step :storage)
+                    tools/infrastructure-step (step :infrastructure) workflow/backend-finalize-step (step :finalize)
+                    workflow/backend-advice (fn [& _] identity)]
+        (let [result (green.workflow/run workflow/workflow (assoc managed :green/event :delete :compute-prevent-destroy false :s3-bucket-mode "managed"))]
+          (is (= (if (= status "partial") 0 1) (:green/exit result)))
+          (is (= (if (= status "partial") [:ansible :ssh-config :dns :storage :infrastructure :finalize] []) @calls)))))))

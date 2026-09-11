@@ -54,8 +54,9 @@ export async function startStep(opts:Opts,env:Record<string,string|undefined>=pr
  ],afterValidate:async(current,_e,c)=>{
   if(c.real&&c.event==='delete'){
    const result=await (deps.reader??((o)=>read_deployment(o,env)))(current);
-   if(result.status!=='present'&&current[`${current['provider-backend']}-bucket-mode`]==='managed')return {...current,'automq/finalize-only':true,'red/exit':0};
+   if(['absent','destroyed'].includes(result.status)&&current[`${current['provider-backend']}-bucket-mode`]==='managed')return {...current,'automq/finalize-only':true,'red/exit':0};
    if(result.status==='destroyed')return {...current,'automq/already-destroyed':true,'red/exit':0};
+   if(result.status==='partial')return {...current,'red/exit':0};
    if(result.status!=='present')return {...current,'red/exit':1,'red/err':'compute state unavailable; legacy monolithic state requires explicit migration'};
    return {...current,'colors-compute/cluster':result.cluster,...(result.key?.private_key_path?{'ssh-private-key-path':result.key.private_key_path}:{}),'red/exit':0};
   }

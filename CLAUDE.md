@@ -186,7 +186,7 @@ reading local keys or calling a provider.
 ## Commands
 
 ```sh
-cd green && bb test          # 55 tests
+cd green && bb test          # 57 tests
 cd green && bb golden        # two fixtures: keygen and opt-out
 cd green && bb golden:accept # only after reading the diff
 cd red   && bun test && bun run typecheck

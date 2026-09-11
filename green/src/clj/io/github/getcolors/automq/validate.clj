@@ -169,11 +169,14 @@
     (when (and (:automq-storage-managed opts) (= "gcs" (:automq-storage-provider opts))
                (or (missing? (:google-project opts)) (not= "https://storage.googleapis.com" (:automq-r2-endpoint opts))))
       ["managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com"])
+    (when (and (contains? opts :automq-oci-user-email)
+               (not (re-matches email-re (str (:automq-oci-user-email opts)))))
+      [":automq-oci-user-email must be an email address unique to the OCI service user"])
     (when (and (:automq-storage-managed opts) (= "oci" (:automq-storage-provider opts))
-               (or (some #(missing? (get opts %)) [:oci-tenancy-id :oci-compartment-id :oci-namespace :oci-config-file-profile :automq-r2-region])
+               (or (some #(missing? (get opts %)) [:oci-tenancy-id :oci-compartment-id :oci-namespace :oci-config-file-profile :automq-r2-region :automq-oci-user-email])
                    (= "auto" (:automq-r2-region opts))
                    (not= (:automq-r2-endpoint opts) (str "https://" (:oci-namespace opts) ".compat.objectstorage." (:automq-r2-region opts) ".oraclecloud.com"))))
-      ["managed OCI storage requires tenancy, compartment, namespace, config profile, region and the matching OCI compatibility endpoint"])
+      ["managed OCI storage requires tenancy, compartment, namespace, config profile, unique user email, region and the matching OCI compatibility endpoint"])
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
                      (not (re-matches bucket-re (str (get opts k)))))]

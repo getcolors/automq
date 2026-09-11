@@ -57,7 +57,7 @@ Managed S3 uses `automq-storage-provider: s3` and
 `automq-ops-r2-bucket`, `automq-r2-endpoint`, and `automq-r2-region` keys also
 address S3 for compatibility. Supply the regional S3 endpoint and AWS region;
 application access keys are generated with access only to those two buckets,
-kept in encrypted remote state, and passed to Ansible through its environment.
+kept in the state bucket, and passed to Ansible through its environment.
 Use a separate `s3-bucket` for state; `s3-bucket-mode: managed` delegates its
 lifecycle to colors-compute.
 
@@ -75,7 +75,9 @@ Managed OCI storage uses `automq-storage-provider: oci` and
 `automq-storage-managed: true`. The package creates private data and ops
 buckets plus a user, group, bucket-scoped policy, customer secret key and RSA API signing key.
 Use `oci-tenancy-id`, `oci-compartment-id`, `oci-namespace`,
-`oci-config-file-profile`, and the OCI region in `automq-r2-region`.
+`oci-config-file-profile`, `automq-oci-user-email`, and the OCI region in
+`automq-r2-region`. The service user needs an email unique within the tenancy.
+Identity Domains rejected creation without a primary email in the live test.
 The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
 Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
 SecurityToken` for a session profile. API key authentication is the default.

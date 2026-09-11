@@ -27,7 +27,7 @@
   "resource": {
     "oci_core_instance": {
       "node": {
-        "availability_domain": "XquT:EU-FRANKFURT-1-AD-1",
+        "availability_domain": "EXAMPLE:EU-FRANKFURT-1-AD-3",
         "compartment_id": "ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "create_vnic_details": {
           "assign_public_ip": true,
@@ -46,7 +46,8 @@
         "shape": "VM.Standard.A2.Flex",
         "shape_config": {
           "memory_in_gbs": null,
-          "ocpus": 1
+          "ocpus": null,
+          "vcpus": 2
         },
         "source_details": {
           "boot_volume_size_in_gbs": 50,

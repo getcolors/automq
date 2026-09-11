@@ -16,7 +16,7 @@ together, so one run is enough to fix a file.
 
 Compute credentials and provider options follow the version of
 [colors-compute](https://github.com/getcolors/colors-compute) pinned by this
-skill. The library also owns R2, S3 native GCS and OCI remote state configuration.
+skill. The library also owns R2, S3, native GCS and OCI remote state configuration.
 Managed application storage generates its scoped access keys; the operator does
 not supply `COLORS_PAR_AUTOMQ_R2_*` in that mode. Cloudflare credentials are
 required only when `provider-dns: cloudflare`.
@@ -185,7 +185,9 @@ Managed OCI storage uses `automq-storage-provider: oci` and
 `automq-storage-managed: true`. The package creates private data and ops
 buckets plus a user, group, bucket-scoped policy, customer secret key and RSA API signing key.
 Use `oci-tenancy-id`, `oci-compartment-id`, `oci-namespace`,
-`oci-config-file-profile`, and the OCI region in `automq-r2-region`.
+`oci-config-file-profile`, `automq-oci-user-email`, and the OCI region in
+`automq-r2-region`. The service user needs an email unique within the tenancy.
+Identity Domains rejected creation without a primary email in the live test.
 The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
 Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
 SecurityToken` for a session profile. API key authentication is the default.
@@ -213,7 +215,7 @@ OCI's S3 compatibility endpoint enforces conditional create but ignored
 `If-Match` on PUT in the live negative test. Lease renewal, expired lease
 takeover and release therefore use native OCI HEAD/PUT with native ETags and
 the scoped application's API signing key. Broker data still uses the S3
-compatibility API. The signing key stays in encrypted state and root-only
+compatibility API. The signing key stays in the state bucket and root-only
 `store.env` and `cert.env`; it is not a Docker environment variable.
 
 Before genesis, an OCI-only gate verifies conditional create, exact native
@@ -224,4 +226,5 @@ It removes its temporary key and retries credential propagation for up to
 The host play supports `x86_64` and `aarch64`. Docker's repository architecture
 and lego's binary name follow the host. The pinned AutoMQ image must include
 that platform. `oci-memory-in-gbs` is optional in the pinned compute library;
-omit it to request the shape's API default when OCI rejects an explicit ratio.
+omit it to request the shape's API default. Omission did not resolve the
+observed A2 ratio rejection, so do not treat it as a verified repair.

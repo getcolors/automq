@@ -36,6 +36,7 @@ resource "oci_identity_user" "application" {
   compartment_id = "ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   name           = "automq-oci-fixture-automq-storage"
   description    = "AutoMQ application bucket access"
+  email          = "automq-oci-storage@example.com"
   freeform_tags  = local.tags
 }
 resource "oci_identity_group" "application" {

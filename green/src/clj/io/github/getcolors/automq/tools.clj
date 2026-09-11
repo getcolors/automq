@@ -152,7 +152,7 @@
       {:dir dir :inventory "inventory.ini"
        :playbooks {:create "main.yml" :delete "main.yml"}
        :extra-vars {:host_alias (ssh-config/host-alias opts)
-                    :ssh_hosts (ssh-config-hosts opts (nodes opts))
+                    :ssh_hosts (if delete? [] (ssh-config-hosts opts (nodes opts)))
                     :block_state (if delete? "absent" "present")}}
       (ansible-local-specs opts))))
 
@@ -255,8 +255,8 @@
     (if (and (= :delete (:green/event opts)) (nil? (:colors-compute/cluster opts)))
       ;; A readable state without compute: there is nothing to stop, and the
       ;; cleanup play would only fail against the placeholder addresses. (An
-      ;; unreadable state, or a partial one, never reaches here — the delete
-      ;; failed closed at adoption.)
+      ;; unreadable state never reaches here. Partial state is accepted only
+      ;; after the library verifies all declared nodes have empty or absent state.)
       (assoc opts :green/exit 0)
       (if (and (storage/managed? opts) (= :create (:green/event opts)))
         (let [rendered (sc/scaffold opts (ansible-specs opts))

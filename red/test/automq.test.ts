@@ -586,6 +586,7 @@ describe('shared compute integration',()=>{
   const adopted=await workflow.startStep(values,{},deps);expect(adopted['red/exit']).toBe(0);expect(adopted['colors-compute/cluster']).toEqual(params);expect(adopted['ssh-private-key-path']).toBe('/owned/key');
   const error=await workflow.startStep(values,{}, {...deps,reader:async()=>({status:'error'})});expect(error['red/exit']).toBe(1);
   const retired=await workflow.startStep(values,{}, {...deps,reader:async()=>({status:'destroyed'})});expect(retired['automq/already-destroyed']).toBe(true);
+  for(const status of ['partial','error','absent','destroyed']){const result=await workflow.startStep({...values,'r2-bucket-mode':'managed'}, {}, {...deps,reader:async()=>({status})});expect(result['red/exit']).toBe(status==='error'?1:0);expect(Boolean(result['automq/finalize-only'])).toBe(['absent','destroyed'].includes(status));}
  });
 });
 

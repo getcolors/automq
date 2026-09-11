@@ -177,7 +177,7 @@ export async function ansibleLocalStep(opts: Opts): Promise<Opts> {
     playbooks: { create: "main.yml", delete: "main.yml" },
     extraVars: {
       host_alias: sshConfig.hostAlias(opts),
-      ssh_hosts: sshConfigHosts(opts, nodes(opts)),
+      ssh_hosts: isDelete ? [] : sshConfigHosts(opts, nodes(opts)),
       block_state: isDelete ? "absent" : "present",
     },
   }, ansibleLocalSpecs(opts));

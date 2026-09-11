@@ -194,8 +194,10 @@ def state_errors(opts: dict) -> list[str]:
         errors.append(":automq-storage-managed must be true or false")
     if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") not in ("s3", "gcs", "oci"):
         errors.append("managed storage requires :automq-storage-provider s3, gcs or oci")
-    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "oci" and (any(missing(opts.get(key)) for key in ["oci-tenancy-id", "oci-compartment-id", "oci-namespace", "oci-config-file-profile", "automq-r2-region"]) or opts.get("automq-r2-region") == "auto" or opts.get("automq-r2-endpoint") != f"https://{opts.get('oci-namespace')}.compat.objectstorage.{opts.get('automq-r2-region')}.oraclecloud.com"):
-        errors.append("managed OCI storage requires tenancy, compartment, namespace, config profile, region and the matching OCI compatibility endpoint")
+    if "automq-oci-user-email" in opts and not email_re.fullmatch(_s(opts.get("automq-oci-user-email"))):
+        errors.append(":automq-oci-user-email must be an email address unique to the OCI service user")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "oci" and (any(missing(opts.get(key)) for key in ["oci-tenancy-id", "oci-compartment-id", "oci-namespace", "oci-config-file-profile", "automq-r2-region", "automq-oci-user-email"]) or opts.get("automq-r2-region") == "auto" or opts.get("automq-r2-endpoint") != f"https://{opts.get('oci-namespace')}.compat.objectstorage.{opts.get('automq-r2-region')}.oraclecloud.com"):
+        errors.append("managed OCI storage requires tenancy, compartment, namespace, config profile, unique user email, region and the matching OCI compatibility endpoint")
     if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "gcs" and (missing(opts.get("google-project")) or opts.get("automq-r2-endpoint") != "https://storage.googleapis.com"):
         errors.append("managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com")
     if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "s3" and opts.get("automq-r2-region") == "auto":

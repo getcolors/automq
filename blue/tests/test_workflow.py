@@ -132,3 +132,22 @@ async def test_full_native_build_renders_compute_dns_and_ansible_without_credent
     assert list(tmp_path.rglob('inventory.json'))
     assert list(tmp_path.rglob('compose.yml'))
     assert list(tmp_path.rglob('*.tf.json'))
+
+@pytest.mark.parametrize('status', ['partial', 'error', 'absent', 'destroyed'])
+async def test_partial_delete_and_managed_retry_routing(status, monkeypatch):
+    async def no_tools(*args): return []
+    async def read(*args): return {'status': status}
+    monkeypatch.setattr(validate, 'runtime_errors', no_tools)
+    monkeypatch.setattr(validate, 'secret_errors', lambda *args: [])
+    monkeypatch.setattr(workflow, 'read_deployment', read)
+    result = await workflow.start_step(fixture({'blue/event': 'delete', 'compute-prevent-destroy': False, 'r2-bucket-mode': 'managed'}), {})
+    assert result['blue/exit'] == (1 if status == 'error' else 0)
+    assert bool(result.get('automq/finalize-only')) == (status in ('absent', 'destroyed'))
+
+async def test_ssh_config_delete_needs_no_cluster(monkeypatch):
+    async def run(opts, specs, **kwargs):
+        assert kwargs['extra_vars']['ssh_hosts'] == []
+        assert kwargs['extra_vars']['block_state'] == 'absent'
+        return {**opts, 'blue/exit': 0}
+    monkeypatch.setattr(tools, 'ansible_with_spec', run)
+    assert (await tools.ansible_local_step(fixture({'blue/event': 'delete'})))['blue/exit'] == 0
