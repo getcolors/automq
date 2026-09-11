@@ -1,7 +1,7 @@
 # Configuration
 
-`colors.yml` is a flat, non-secret YAML map. The reference deployment is
-`automq-vultr/colors.yml`. Validation reports every desired-state problem
+`colors.yml` is a flat, non-secret YAML map. Reference deployments include
+`automq-vultr/colors.yml`, `automq-aws/colors.yml`, and `automq-gcloud/colors.yml`. Validation reports every desired-state problem
 together, so one run is enough to fix a file.
 
 ## Credentials
@@ -12,22 +12,25 @@ together, so one run is enough to fix a file.
 | AutoMQ object storage | `COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID`, `COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY` |
 | R2 state backend | `COLORS_PAR_R2_ACCESS_KEY_ID`, `COLORS_PAR_R2_SECRET_ACCESS_KEY` |
 | S3 state backend | Ambient AWS credential chain |
+| Google compute, GCS storage and state | Application Default Credentials for OpenTofu; active `gcloud` account for lifecycle operations |
 
 Compute credentials and provider options follow the version of
 [colors-compute](https://github.com/getcolors/colors-compute) pinned by this
-skill. The library also owns R2 and S3 remote state configuration.
+skill. The library also owns R2, S3 and native GCS remote state configuration.
+Managed application storage generates its scoped access keys; the operator does
+not supply `COLORS_PAR_AUTOMQ_R2_*` in that mode. Cloudflare credentials are
+required only when `provider-dns: cloudflare`.
 
 Never export `COLORS_PAR_PROFILE`.
 
-The storage pair is the only credential written to the hosts, which is why it
-should be scoped to the two AutoMQ buckets and nothing else. The Cloudflare
-token reaches exactly one host — node 0, the certificate issuer — so
-compromising either other broker yields no control over the zone.
+The object-storage credentials installed on each host must be scoped to the two
+AutoMQ buckets. In ACME mode, the Cloudflare token reaches only node 0, the
+certificate issuer. Private-CA mode needs no Cloudflare token.
 
-Every password inside the cluster is generated on node 0 at first converge and
-exists nowhere else: the four SASL principals, their SCRAM salts, and the
-keystore password. None of them is an operator credential, and none is ever
-written to `.colors/`, to a golden file, or to an Ansible variable.
+The cluster generates its SASL passwords, SCRAM salts and keystore password
+at first convergence and distributes the secret bundle to its nodes. Later
+convergences reuse a surviving node's bundle. These are not operator-supplied
+credentials and are never rendered into `.colors/` or golden files.
 
 The package refuses to run against a `~/.ssh/config` that already declares
 `Host <profile>` or `Host <profile>-<n>` outside its own markers, or whose
@@ -117,7 +120,7 @@ Machines are named `<profile>-<node-id>` unless the provider name override is
 set. The library owns the managed profile keypair, or uses explicitly configured
 external keys and their private identity path.
 
-Set `provider-backend` to `r2` or `s3`. Compute uses separate shared and per-node
+Set `provider-backend` to `r2`, `s3`, or `gcs`. Compute uses separate shared and per-node
 state objects plus a deployment journal. Existing monolithic compute state is
 refused and requires an explicit migration before create or delete.
 
@@ -133,9 +136,9 @@ refused and requires an explicit migration before create or delete.
 - **The client password leaked.** `automq-rotate`. It is an atomic replace and
   disconnects existing clients; there is no zero-downtime rotation for a single
   principal.
-- **Purging storage.** `delete` deliberately leaves the buckets alone. Empty
-  them by hand, including the `_colors/<profile>/` markers, before adopting
-  them again.
+- **Purging adopted storage.** `delete` retains adopted buckets. Empty them,
+  including the `_colors/<profile>/` markers, before adopting them again.
+  Managed delete removes the owned buckets and their contents.
 
 ## Managed Google Cloud Storage
 
