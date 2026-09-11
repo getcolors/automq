@@ -28,6 +28,7 @@ import time
 import uuid
 
 import boto3
+from botocore.auth import AUTH_TYPE_MAPS, S3SigV4Auth
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -35,7 +36,35 @@ SCHEMA = 1
 PREFIX = "_colors"
 
 
+def _set_header(request, name, value):
+    # Before-sign hooks run again on retries. HTTPHeaders assignment appends,
+    # so delete every old value before setting the replacement.
+    del request.headers[name]
+    request.headers[name] = value
+
+
+class GcsSigV4Auth(S3SigV4Auth):
+    """Keep GCS generation conditions and signing headers in one namespace."""
+
+    def _modify_request_before_signing(self, request):
+        super()._modify_request_before_signing(request)
+        # GCS rejects a request mixing x-amz and x-goog extension headers.
+        # x-amz-if-generation-match is silently ignored, so preserve the real
+        # GCS condition and translate the signing headers before signing.
+        for name in list(request.headers):
+            if name.lower().startswith("x-amz-"):
+                target = "x-goog-" + name[6:]
+                value = request.headers[name]
+                del request.headers[name]
+                _set_header(request, target, value)
+
+
+AUTH_TYPE_MAPS["automq-gcs-v4"] = GcsSigV4Auth
+
+
 def client(endpoint, region):
+    from urllib.parse import urlparse
+    gcs = urlparse(endpoint).hostname == "storage.googleapis.com"
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -43,7 +72,8 @@ def client(endpoint, region):
         aws_access_key_id=os.environ["AUTOMQ_R2_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["AUTOMQ_R2_SECRET_ACCESS_KEY"],
         # Path style: the endpoint is an account host, not a bucket host.
-        config=Config(s3={"addressing_style": "path"}, retries={"max_attempts": 5}),
+        config=Config(s3={"addressing_style": "path"}, retries={"max_attempts": 5},
+                      signature_version="automq-gcs-v4" if gcs else None),
     )
 
 
@@ -74,9 +104,9 @@ def _is_gcs(s3):
 def _sign_if_none_match(request, **_kwargs):
     from urllib.parse import urlparse
     if urlparse(request.url).hostname == "storage.googleapis.com":
-        request.headers.add_header("x-goog-if-generation-match", "0")
+        _set_header(request, "x-goog-if-generation-match", "0")
     else:
-        request.headers.add_header("If-None-Match", "*")
+        _set_header(request, "If-None-Match", "*")
 
 
 def put_json(s3, bucket, k, payload, if_absent=False):
@@ -451,7 +481,7 @@ def _etag(s3, bucket, k):
 def _put_if_match(s3, bucket, k, payload, etag):
     """Replace an object only if it still has the ETag we read."""
     def handler(request, **_kwargs):
-        request.headers.add_header("x-goog-if-generation-match" if _is_gcs(s3) else "If-Match", etag)
+        _set_header(request, "x-goog-if-generation-match" if _is_gcs(s3) else "If-Match", etag)
 
     s3.meta.events.register("before-sign.s3.PutObject", handler)
     try:

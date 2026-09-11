@@ -161,6 +161,11 @@ The normal `compute-prevent-destroy` guard still applies.
 
 GCS ownership markers and restart leases use `x-goog-if-generation-match`.
 GCS does not accept S3 ETag write preconditions as the same contract.
+The storage helper translates botocore's signing headers to `x-goog-*` before
+signing because GCS rejects requests that mix `x-amz-*` and `x-goog-*` headers.
+Do not substitute `x-amz-if-generation-match`: GCS silently ignores it and
+allows competing writers to succeed. The helper replaces conditional headers
+on retries so each request carries one value.
 
 ## Ubuntu security repository mirror
 

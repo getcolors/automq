@@ -34,11 +34,17 @@ class GcsPreconditions(unittest.TestCase):
             client = store.client("https://storage.googleapis.com", "us-central1")
         generation = 0
         seen = []
+        retry_once = True
 
         def send(request):
-            nonlocal generation
+            nonlocal generation, retry_once
+            self.assertFalse(any(name.lower().startswith("x-amz-") for name in request.headers))
+            self.assertIn("x-goog-date", {name.lower() for name in request.headers})
             condition = request.headers.get("x-goog-if-generation-match")
             seen.append(condition)
+            if retry_once:
+                retry_once = False
+                return AWSResponse(request.url, 500, {}, Body(b"<Error><Code>InternalError</Code></Error>"))
             if condition is None or int(condition) != generation:
                 return AWSResponse(request.url, 412, {}, Body(b"<Error><Code>PreconditionFailed</Code></Error>"))
             generation += 1
@@ -49,7 +55,7 @@ class GcsPreconditions(unittest.TestCase):
             self.assertFalse(store.put_json(client, "bucket", "lease", {"holder": "two"}, if_absent=True))
             self.assertTrue(store._put_if_match(client, "bucket", "lease", {"holder": "two"}, "1"))
             self.assertFalse(store._put_if_match(client, "bucket", "lease", {"holder": "three"}, "1"))
-        self.assertEqual(seen, [b"0", b"0", b"1", b"1"])
+        self.assertEqual(seen, [b"0", b"0", b"0", b"1", b"1"])
 
 
 if __name__ == "__main__":
