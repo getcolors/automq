@@ -1,0 +1,113 @@
+{
+  "locals": {
+    "ingress": {
+      "controller:private": {
+        "name": "automq-gcs-fixture-07965397ab44",
+        "ports": [
+          "9093"
+        ],
+        "protocol": "tcp",
+        "source_ranges": [
+          "10.74.1.0/24"
+        ]
+      },
+      "internal:private": {
+        "name": "automq-gcs-fixture-78af508c67a0",
+        "ports": [
+          "9094"
+        ],
+        "protocol": "tcp",
+        "source_ranges": [
+          "10.74.1.0/24"
+        ]
+      },
+      "kafka:0.0.0.0/0": {
+        "name": "automq-gcs-fixture-102f59c8c71d",
+        "ports": [
+          "9092"
+        ],
+        "protocol": "tcp",
+        "source_ranges": [
+          "0.0.0.0/0"
+        ]
+      },
+      "ssh:0.0.0.0/0": {
+        "name": "automq-gcs-fixture-03c3b75ae20a",
+        "ports": [
+          "22"
+        ],
+        "protocol": "tcp",
+        "source_ranges": [
+          "0.0.0.0/0"
+        ]
+      }
+    }
+  },
+  "output": {
+    "params": {
+      "value": {
+        "firewall_ids": "${ {for key, rule in google_compute_firewall.ingress : key => rule.id} }",
+        "network_cidr": "${google_compute_subnetwork.network.ip_cidr_range}",
+        "network_id": "${google_compute_network.network.id}",
+        "network_tag": "automq-gcs-fixture-network",
+        "provider": "google",
+        "subnetwork_id": "${google_compute_subnetwork.network.id}"
+      }
+    }
+  },
+  "provider": {
+    "google": {
+      "project": "colors-example",
+      "region": "us-central1",
+      "zone": "us-central1-a"
+    }
+  },
+  "resource": {
+    "google_compute_firewall": {
+      "ingress": {
+        "allow": [
+          {
+            "ports": "${each.value.ports}",
+            "protocol": "${each.value.protocol}"
+          }
+        ],
+        "direction": "INGRESS",
+        "for_each": "${local.ingress}",
+        "name": "${each.value.name}",
+        "network": "${google_compute_network.network.id}",
+        "source_ranges": "${each.value.source_ranges}",
+        "target_tags": [
+          "automq-gcs-fixture-network"
+        ]
+      }
+    },
+    "google_compute_network": {
+      "network": {
+        "auto_create_subnetworks": false,
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "name": "automq-gcs-fixture-network"
+      }
+    },
+    "google_compute_subnetwork": {
+      "network": {
+        "ip_cidr_range": "10.74.1.0/24",
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "name": "automq-gcs-fixture-network",
+        "network": "${google_compute_network.network.id}",
+        "region": "us-central1"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "google": {
+        "source": "hashicorp/google",
+        "version": "6.0.0"
+      }
+    }
+  }
+}

@@ -3,14 +3,16 @@
 A [getcolors](https://www.getcolors.ai/) Package Skill that provisions a
 three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster: the
 Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles, and
-Cloudflare R2 or managed AWS S3 as the storage tier.
+Cloudflare R2, managed AWS S3, or managed Google Cloud Storage as the storage tier.
 
 It ships in all three colours — `green/` (Clojure), `red/` (TypeScript) and
 `blue/` (Python) — which render byte-identical artifacts from one `colors.yml`.
 Pick whichever runtime your project already has; nothing else about the
 deployment changes.
 
-The reference deployment is [`automq-vultr`](https://github.com/getcolors/automq-vultr).
+Deployment repositories include [`automq-vultr`](https://github.com/getcolors/automq-vultr),
+[`automq-aws`](https://github.com/getcolors/automq-aws), and
+[`automq-gcloud`](https://github.com/getcolors/automq-gcloud).
 
 ## Replication factor 1 is the design
 
@@ -58,6 +60,16 @@ application access keys are generated with access only to those two buckets,
 kept in encrypted remote state, and passed to Ansible through its environment.
 Use a separate `s3-bucket` for state; `s3-bucket-mode: managed` delegates its
 lifecycle to colors-compute.
+
+Managed GCS uses `automq-storage-provider: gcs`, the endpoint
+`https://storage.googleapis.com`, a Google bucket location in
+`automq-r2-region`, and `google-project`. Both application buckets, their
+service account, and HMAC credentials belong to the deployment. Native state
+uses `provider-backend: gcs` with `gcs-bucket`, `gcs-region`, and
+`gcs-bucket-mode: managed`. Google Application Default Credentials authorize
+provisioning. Owned GCS buckets disable soft deletion and are removed with
+their contents during guarded delete. See the package configuration reference
+for required project APIs and ownership checks.
 
 For AWS-only operation without DNS credentials, set `provider-dns: none` and
 `automq-tls-mode: private-ca`. Brokers advertise public IPs and acceptance

@@ -81,15 +81,15 @@ function port(value: unknown): boolean {
 // Application checks run alongside the shared provider and rendering contracts.
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
-  for (const key of [...required, ...(opts["provider-backend"] === "r2" ? ["r2-bucket", "r2-endpoint"] : opts["provider-backend"] === "s3" ? ["s3-bucket", "s3-region"] : [])]) {
+  for (const key of [...required, ...(opts["provider-backend"] === "r2" ? ["r2-bucket", "r2-endpoint"] : opts["provider-backend"] === "s3" ? ["s3-bucket", "s3-region"] : opts["provider-backend"] === "gcs" ? ["gcs-bucket", "gcs-region"] : [])]) {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
   if (!["cloudflare", "none"].includes(opts["provider-dns"])) errors.push(":provider-dns must be cloudflare or none");
   if (!["acme", "private-ca"].includes(opts["automq-tls-mode"] ?? "acme")) errors.push(":automq-tls-mode must be acme or private-ca");
   if (opts["provider-dns"] === "none" && opts["automq-tls-mode"] !== "private-ca") errors.push(":provider-dns none requires :automq-tls-mode private-ca");
   if (opts["automq-tls-mode"] === "private-ca" && opts["provider-dns"] !== "none") errors.push(":automq-tls-mode private-ca requires :provider-dns none");
-  if (!["s3", "r2"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be s3 or r2");
+  if (!["s3", "r2", "gcs"].includes(String(opts["provider-backend"]))) {
+    errors.push(":provider-backend must be s3, r2 or gcs");
   }
   // A boolean, not `true`. The guard is lifted for exactly one run by
   // COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
@@ -179,8 +179,9 @@ export function stateErrors(opts: Opts): string[] {
 
   // --- object storage
   if ("automq-storage-managed" in opts && typeof opts["automq-storage-managed"] !== "boolean") errors.push(":automq-storage-managed must be true or false");
-  if (opts["automq-storage-managed"] && opts["automq-storage-provider"] !== "s3") errors.push("managed storage requires :automq-storage-provider s3");
-  if (opts["automq-storage-managed"] && opts["automq-r2-region"] === "auto") errors.push("managed S3 storage requires an AWS region in :automq-r2-region");
+  if (opts["automq-storage-managed"] && !["s3", "gcs"].includes(String(opts["automq-storage-provider"]))) errors.push("managed storage requires :automq-storage-provider s3 or gcs");
+  if (opts["automq-storage-managed"] && opts["automq-storage-provider"] === "gcs" && (missing(opts["google-project"]) || opts["automq-r2-endpoint"] !== "https://storage.googleapis.com")) errors.push("managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com");
+  if (opts["automq-storage-managed"] && opts["automq-storage-provider"] === "s3" && opts["automq-r2-region"] === "auto") errors.push("managed S3 storage requires an AWS region in :automq-r2-region");
   for (const key of ["automq-data-r2-bucket", "automq-ops-r2-bucket"]) {
     if (!missing(opts[key]) && !bucketRe.test(String(opts[key]))) {
       errors.push(`:${key} must be a valid bucket name`);
@@ -197,7 +198,7 @@ export function stateErrors(opts: Opts): string[] {
   // AutoMQ writes hash-prefixed keys at the bucket root. Sharing them is not a
   // style question.
   for (const key of ["automq-data-r2-bucket", "automq-ops-r2-bucket"]) {
-    if (!missing(opts[key]) && String(opts[key]) === String(opts[opts["provider-backend"] === "s3" ? "s3-bucket" : "r2-bucket"])) {
+    if (!missing(opts[key]) && String(opts[key]) === String(opts[`${opts["provider-backend"]}-bucket`])) {
       errors.push(`:${key} must not be the OpenTofu state bucket: AutoMQ writes keys at the bucket root`);
     }
   }
@@ -266,5 +267,5 @@ async function commandPresent(runner: Runner, command: string): Promise<boolean>
 }
 
 export async function runtimeErrors(opts:Opts,runner:Runner=runtime.exec):Promise<string[]> {
- const errors:string[]=[];for(const tool of requiredTools)if(!await commandPresent(runner,tool))errors.push('required tool is not on PATH: '+tool);return errors;
+ const errors:string[]=[];for(const tool of [...requiredTools,...(opts["automq-storage-provider"] === "gcs" ? ["gcloud"] : [])])if(!await commandPresent(runner,tool))errors.push('required tool is not on PATH: '+tool);return errors;
 }

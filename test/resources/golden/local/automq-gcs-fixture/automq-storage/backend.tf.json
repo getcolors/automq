@@ -1,0 +1,10 @@
+{
+  "terraform" : {
+    "backend" : {
+      "gcs" : {
+        "bucket" : "automq-gcs-fixture-state-colors-example-us-central1",
+        "prefix" : "automq-gcs-fixture/automq-storage.tfstate"
+      }
+    }
+  }
+}

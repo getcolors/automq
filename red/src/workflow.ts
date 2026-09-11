@@ -54,7 +54,7 @@ export async function startStep(opts:Opts,env:Record<string,string|undefined>=pr
  ],afterValidate:async(current,_e,c)=>{
   if(c.real&&c.event==='delete'){
    const result=await (deps.reader??((o)=>read_deployment(o,env)))(current);
-   if(result.status!=='present'&&current['s3-bucket-mode']==='managed')return {...current,'automq/finalize-only':true,'red/exit':0};
+   if(result.status!=='present'&&current[`${current['provider-backend']}-bucket-mode`]==='managed')return {...current,'automq/finalize-only':true,'red/exit':0};
    if(result.status==='destroyed')return {...current,'automq/already-destroyed':true,'red/exit':0};
    if(result.status!=='present')return {...current,'red/exit':1,'red/err':'compute state unavailable; legacy monolithic state requires explicit migration'};
    return {...current,'colors-compute/cluster':result.cluster,...(result.key?.private_key_path?{'ssh-private-key-path':result.key.private_key_path}:{}),'red/exit':0};
@@ -89,7 +89,7 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
       // address makes them point at somebody else's machine.
       "automq/dns": [tools.dnsStep, runOpts["automq-storage-managed"] ? "automq/storage" : "automq/infrastructure"],
       "automq/storage": [storage.storageStep, "automq/infrastructure"],
-      "automq/infrastructure": runOpts["s3-bucket-mode"] === "managed" ? [tools.infrastructureStep, "automq/backend-finalize"] : [tools.infrastructureStep],
+      "automq/infrastructure": runOpts[`${runOpts["provider-backend"]}-bucket-mode`] === "managed" ? [tools.infrastructureStep, "automq/backend-finalize"] : [tools.infrastructureStep],
       "automq/backend-finalize": [backendFinalizeStep],
     };
     return graph[step];
@@ -110,10 +110,12 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
 }
 
 export function backendAdvice(tool: string) {
-  return tofu.conventionalBackendAdvice({
+  return (opts: Opts) => opts["provider-backend"] === "gcs"
+    ? tofu.gcsBackendAdvice((o: Opts) => tools.toolDir(o, tool), (o: Opts) => ({bucket:o["gcs-bucket"],prefix:`${o.profile}/${tool}.tfstate` }))(opts)
+    : tofu.conventionalBackendAdvice({
     dir: (opts) => tools.toolDir(opts, tool),
     key: (opts) => `${opts.profile ?? ""}/${tool}.tfstate`,
-  });
+  })(opts);
 }
 
 export const sideEffecting = [

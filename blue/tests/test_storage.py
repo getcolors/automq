@@ -30,7 +30,7 @@ def test_storage_lifecycle_order():
     assert workflow.wire_fn("automq/storage", {**OPTS, "blue/event": "delete"})[1] == "automq/infrastructure"
 
 def test_retired_compute_routes_directly_to_finalization_on_retry():
-    opts = {**OPTS, "s3-bucket-mode": "managed", "automq/finalize-only": True}
+    opts = {**OPTS, "provider-backend": "s3", "s3-bucket-mode": "managed", "automq/finalize-only": True}
     assert workflow.next_steps("automq/start", ["automq/ansible"], opts) == [("automq/backend-finalize", opts)]
     assert workflow.next_steps("automq/backend-finalize", [], opts) == []
     assert workflow.wire_fn("automq/infrastructure", {**opts, "blue/event": "delete"})[1] == "automq/backend-finalize"
@@ -59,3 +59,16 @@ async def test_renamed_tracked_bucket_must_not_adopt_existing_destination(monkey
     monkeypatch.setattr(storage.runtime, "exec", runner)
     with pytest.raises(RuntimeError, match="refuses to adopt"):
         await storage.ownership_preflight(OPTS)
+
+@pytest.mark.asyncio
+async def test_gcs_ownership_and_finalization(monkeypatch):
+    opts = {**OPTS, "automq-storage-provider": "gcs", "google-project": "colors-508307", "provider-backend": "gcs", "gcs-bucket-mode": "managed"}
+    runner = AsyncMock(side_effect=[result(), result(), result(1, err="gs://owned-data not found: 404."), result(1, err="gs://owned-data not found: 404.")])
+    monkeypatch.setattr(storage.runtime, "exec", runner)
+    await storage.ownership_preflight(opts)
+    assert runner.call_args_list[2].args[0][0] == "gcloud"
+    assert workflow.wire_fn("automq/infrastructure", {**opts, "blue/event": "delete"})[1] == "automq/backend-finalize"
+    runner = AsyncMock(side_effect=[result(), result(), result(1, err="HTTPError 403: Forbidden")])
+    monkeypatch.setattr(storage.runtime, "exec", runner)
+    with pytest.raises(RuntimeError, match="refuses to adopt"):
+        await storage.ownership_preflight(opts)

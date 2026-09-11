@@ -1,5 +1,5 @@
 (ns io.github.getcolors.automq.storage
-  "Opt-in deployment-owned S3 data/ops buckets and bucket-scoped credentials."
+  "Opt-in deployment-owned S3 or GCS data/ops buckets and bucket-scoped credentials."
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [green.cli :as cli]
@@ -16,7 +16,7 @@
          :aws-session-token "AWS_SESSION_TOKEN"}))
 (defn specs [opts]
   [{:template :io.github.getcolors.automq.tools.storage/main.tf
-    :target (str (directory opts) "/main.tf") :data opts :opts scaffold/preserve-jinja-delimiters}])
+    :target (str (directory opts) "/main.tf") :data (assoc opts :automq-storage-gcs (= "gcs" (:automq-storage-provider opts))) :opts scaffold/preserve-jinja-delimiters}])
 (defn- checked [args options]
   (let [result (process/run args options)]
     (when-not (zero? (:exit result))
@@ -33,13 +33,13 @@
               (throw (ex-info "managed storage state unavailable" {})))
           addresses (set (str/split-lines (if empty-state? "" (:out state))))
           recorded (if (empty? addresses) {}
-                       (into {} (map (juxt :address #(get-in % [:values :bucket])))
+                       (into {} (map (juxt :address #(or (get-in % [:values :bucket]) (get-in % [:values :name]))))
                              (get-in (json/parse-string (checked ["tofu" "show" "-json"] options) true) [:values :root_module :resources])))]
       (doseq [[role bucket] [["data" (:automq-data-r2-bucket opts)] ["ops" (:automq-ops-r2-bucket opts)]]]
-        (when-not (= bucket (get recorded (str "aws_s3_bucket.application[\"" role "\"]")))
-          (let [result (process/run ["aws" "s3api" "head-bucket" "--bucket" bucket "--region" (:automq-r2-region opts)] options)]
+        (when-not (= bucket (get recorded (str (if (= "gcs" (:automq-storage-provider opts)) "google_storage_bucket" "aws_s3_bucket") ".application[\"" role "\"]")))
+          (let [result (process/run (if (= "gcs" (:automq-storage-provider opts)) ["gcloud" "storage" "buckets" "describe" (str "gs://" bucket) "--project" (:google-project opts) "--format=json"] ["aws" "s3api" "head-bucket" "--bucket" bucket "--region" (:automq-r2-region opts)]) options)]
             ;; 403, network failures, and a successful probe all fail closed.
-            (when-not (and (pos? (:exit result)) (re-find #"\(404\)|Not Found|NoSuchBucket" (str (:err result))))
+            (when-not (and (pos? (:exit result)) (re-find #"\(404\)|Not Found|NoSuchBucket|HTTPError 404|not found: 404" (str (:err result))))
               (throw (ex-info "managed storage refuses to adopt an existing or inaccessible bucket" {})))))))))
 (defn step [opts]
   (if-not (managed? opts) (assoc opts :green/exit 0)
@@ -54,7 +54,7 @@
           ;; Scoped credentials remain in memory and encrypted backend state.
           ;; Never copy them into template values or print the output object.
           result))
-      (catch Exception _ (assoc opts :green/exit 1 :green/err "managed S3 storage failed; inspect bucket ownership, state access, and AWS permissions")))))
+      (catch Exception _ (assoc opts :green/exit 1 :green/err "managed storage failed; inspect bucket ownership, state access, and provider permissions")))))
 (defn credential-env [opts]
   (let [{:keys [access_key_id secret_access_key]} (:automq/storage-credentials opts)]
     (when (or (str/blank? access_key_id) (str/blank? secret_access_key))

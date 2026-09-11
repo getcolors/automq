@@ -1,0 +1,13 @@
+[Unit]
+Description=Check hourly for a newly published AutoMQ certificate
+
+[Timer]
+OnCalendar=hourly
+# Every node polls the same object. The randomized delay reduces the collision;
+# the object-store lease in automq-cert-deploy is what actually guarantees only
+# one node restarts at a time.
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

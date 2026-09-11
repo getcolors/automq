@@ -50,7 +50,7 @@ async def start_step(original, env=None):
     async def after(opts, _env, context):
         if context['real'] and context['event'] == 'delete':
             result = await read_deployment(opts, environment)
-            if result['status'] != 'present' and opts.get('s3-bucket-mode') == 'managed':
+            if result['status'] != 'present' and opts.get(str(opts.get('provider-backend')) + '-bucket-mode') == 'managed':
                 return {**opts, 'automq/finalize-only': True, 'blue/exit': 0}
             if result['status'] == 'destroyed':
                 return {**opts, 'automq/already-destroyed': True, 'blue/exit': 0}
@@ -95,7 +95,7 @@ def wire_fn(step: str, run_opts: dict):
             # reissued address makes them point at somebody else's machine.
             "automq/dns": (tools.dns_step, "automq/storage" if run_opts.get("automq-storage-managed") else "automq/infrastructure"),
             "automq/storage": (storage.storage_step, "automq/infrastructure"),
-            "automq/infrastructure": (tools.infrastructure_step, "automq/backend-finalize") if run_opts.get("s3-bucket-mode") == "managed" else (tools.infrastructure_step,),
+            "automq/infrastructure": (tools.infrastructure_step, "automq/backend-finalize") if run_opts.get(str(run_opts.get("provider-backend")) + "-bucket-mode") == "managed" else (tools.infrastructure_step,),
             "automq/backend-finalize": (backend_finalize_step,),
         }.get(step)
     return {
@@ -113,9 +113,13 @@ def wire_fn(step: str, run_opts: dict):
 
 
 def backend_advice(tool: str):
-    return tofu.conventional_backend_advice(
+    conventional = tofu.conventional_backend_advice(
         dir=lambda o, tool=tool: tools.tool_dir(o, tool),
         key=lambda o, tool=tool: f"{o.get('profile') or ''}/{tool}.tfstate")
+    gcs = tofu.gcs_backend_advice(
+        lambda o: tools.tool_dir(o, tool),
+        lambda o: {"bucket": o["gcs-bucket"], "prefix": f"{o.get('profile') or ''}/{tool}.tfstate"})
+    return lambda opts: gcs(opts) if opts.get("provider-backend") == "gcs" else conventional(opts)
 
 
 side_effecting = ["automq/infrastructure", "automq/dns", "automq/ssh-config",

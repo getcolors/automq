@@ -4,7 +4,7 @@
 
 `automq` is a tri-colour Package Skill for a three-node [AutoMQ](https://github.com/AutoMQ/automq)
 cluster: Kafka 3.9.1 wire protocol, KRaft combined `broker,controller`
-roles, and Cloudflare R2 as the storage tier. `green/` (Clojure) is canonical;
+roles, and Cloudflare R2, AWS S3, or Google Cloud Storage as the storage tier. `green/` (Clojure) is canonical;
 `red/` (TypeScript) and `blue/` (Python) are behavioural ports of it, and
 `scripts/parity.sh` is what makes "behavioural" checkable — one fixture, three
 colours, byte-identical trees. The colors-compute library manages the private
@@ -106,7 +106,9 @@ the pinned tag** when bumping `automq-image`.
 
 Adopted R2 mode remains the default: both buckets must exist and be **empty**.
 Opt-in `automq-storage-managed: true` with `automq-storage-provider: s3` creates
-two private S3 buckets and an IAM identity restricted to them in a separate
+two private S3 buckets and an IAM identity restricted to them. Provider `gcs`
+creates private GCS buckets and a bucket-scoped service account with an HMAC key.
+Both providers keep application storage resources in a separate
 `automq-storage` state. Managed delete removes the buckets and all contents
 after broker cleanup; adopted storage survives delete. Never change an adopted
 deployment to managed mode to import existing buckets: first create refuses
@@ -180,6 +182,7 @@ cd green && bb golden:accept # only after reading the diff
 cd red   && bun test && bun run typecheck
 cd blue  && uv run pytest
 ./scripts/parity.sh          # green, red and blue render the same bytes
+python3 test/test_store_preconditions.py # GCS conditional writes through botocore
 ./scripts/launcher.sh        # all three copied payloads
 ./green build                # ./red and ./blue take the same verbs
 ./green create --dry-run

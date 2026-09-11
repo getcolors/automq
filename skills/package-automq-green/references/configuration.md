@@ -136,3 +136,28 @@ refused and requires an explicit migration before create or delete.
 - **Purging storage.** `delete` deliberately leaves the buckets alone. Empty
   them by hand, including the `_colors/<profile>/` markers, before adopting
   them again.
+
+## Managed Google Cloud Storage
+
+Set `automq-storage-managed: true`, `automq-storage-provider: gcs`,
+`google-project`, `automq-r2-endpoint: https://storage.googleapis.com`, and
+`automq-r2-region` to the bucket location. The existing `automq-data-r2-bucket`
+and `automq-ops-r2-bucket` keys name the GCS buckets. The package creates a
+service account and HMAC key restricted to these two buckets. It refuses to
+adopt buckets that are not already recorded in its storage state.
+
+Use a third bucket with `provider-backend: gcs`, `gcs-bucket`, `gcs-region`,
+and `gcs-bucket-mode: managed` for native GCS OpenTofu state. Authentication
+uses Google Application Default Credentials for OpenTofu. Lifecycle ownership
+checks and the state journal use the active `gcloud` account. Both identities
+must have access to the selected project. Enable Compute Engine, Cloud
+Storage, IAM, Cloud Resource Manager, and Service Usage APIs in the project.
+
+Delete stops the brokers, removes data and ops buckets with their contents,
+removes the storage identity, destroys compute and its SSH keypair, then
+finalizes the managed state bucket. GCS soft deletion is disabled for owned
+application buckets so this lifecycle does not retain deleted object data.
+The normal `compute-prevent-destroy` guard still applies.
+
+GCS ownership markers and restart leases use `x-goog-if-generation-match`.
+GCS does not accept S3 ETag write preconditions as the same contract.

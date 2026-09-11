@@ -98,7 +98,7 @@ def state_errors(opts: dict) -> list[str]:
     """Use normalized library results for application rendering."""
     errors: list[str] = []
     errors += [f":{k} is required"
-               for k in [*required, *({"r2": ["r2-bucket", "r2-endpoint"], "s3": ["s3-bucket", "s3-region"]}.get(opts.get("provider-backend"), []))]
+               for k in [*required, *({"r2": ["r2-bucket", "r2-endpoint"], "s3": ["s3-bucket", "s3-region"], "gcs": ["gcs-bucket", "gcs-region"]}.get(opts.get("provider-backend"), []))]
                if missing(opts.get(k))]
     if opts.get("provider-dns") not in ("cloudflare", "none"):
         errors.append(":provider-dns must be cloudflare or none")
@@ -108,8 +108,8 @@ def state_errors(opts: dict) -> list[str]:
         errors.append(":provider-dns none requires :automq-tls-mode private-ca")
     if opts.get("automq-tls-mode") == "private-ca" and opts.get("provider-dns") != "none":
         errors.append(":automq-tls-mode private-ca requires :provider-dns none")
-    if opts.get("provider-backend") not in ("s3", "r2"):
-        errors.append(":provider-backend must be s3 or r2")
+    if opts.get("provider-backend") not in ("s3", "r2", "gcs"):
+        errors.append(":provider-backend must be s3, r2 or gcs")
     # A boolean, not `True`. The guard is lifted for exactly one run by
     # COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     # overlay as every other parameter — so demanding `true` here would reject
@@ -190,9 +190,11 @@ def state_errors(opts: dict) -> list[str]:
     # --- object storage
     if "automq-storage-managed" in opts and not isinstance(opts["automq-storage-managed"], bool):
         errors.append(":automq-storage-managed must be true or false")
-    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") != "s3":
-        errors.append("managed storage requires :automq-storage-provider s3")
-    if opts.get("automq-storage-managed") and opts.get("automq-r2-region") == "auto":
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") not in ("s3", "gcs"):
+        errors.append("managed storage requires :automq-storage-provider s3 or gcs")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "gcs" and (missing(opts.get("google-project")) or opts.get("automq-r2-endpoint") != "https://storage.googleapis.com"):
+        errors.append("managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "s3" and opts.get("automq-r2-region") == "auto":
         errors.append("managed S3 storage requires an AWS region in :automq-r2-region")
     bucket_keys = ["automq-data-r2-bucket", "automq-ops-r2-bucket"]
     errors += [f":{k} must be a valid bucket name" for k in bucket_keys
@@ -209,7 +211,7 @@ def state_errors(opts: dict) -> list[str]:
     # style question.
     errors += [f":{k} must not be the OpenTofu state bucket: AutoMQ writes keys "
                "at the bucket root" for k in bucket_keys
-               if not missing(opts.get(k)) and _s(opts.get(k)) == _s(opts.get("s3-bucket" if opts.get("provider-backend") == "s3" else "r2-bucket"))]
+               if not missing(opts.get(k)) and _s(opts.get(k)) == _s(opts.get(str(opts.get("provider-backend")) + "-bucket"))]
     if not (missing(opts.get("automq-r2-endpoint"))
             or endpoint_re.fullmatch(_s(opts.get("automq-r2-endpoint")))):
         errors.append(":automq-r2-endpoint must be an https endpoint URL")
@@ -273,5 +275,6 @@ async def _command_present(runner, command: str) -> bool:
 
 async def runtime_errors(opts, runner=None):
     runner = runner or runtime.exec
-    present = {tool: await _command_present(runner, tool) for tool in required_tools}
-    return [f"required tool is not on PATH: {tool}" for tool in required_tools if not present[tool]]
+    tools = [*required_tools, *(["gcloud"] if opts.get("automq-storage-provider") == "gcs" else [])]
+    present = {tool: await _command_present(runner, tool) for tool in tools}
+    return [f"required tool is not on PATH: {tool}" for tool in tools if not present[tool]]

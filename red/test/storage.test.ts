@@ -23,7 +23,7 @@ test("managed storage is ordered after compute create and before compute delete"
   expect(workflow.wireFn("automq/storage",{...opts,"red/event":"delete"})?.[1]).toBe("automq/infrastructure");
 });
 test("retired compute routes directly to managed backend finalization on delete retry", () => {
-  const retry = {...opts, "s3-bucket-mode":"managed", "automq/finalize-only":true};
+  const retry = {...opts, "provider-backend":"s3", "s3-bucket-mode":"managed", "automq/finalize-only":true};
   expect(workflow.nextSteps("automq/start",["automq/ansible"],retry)).toEqual([["automq/backend-finalize",retry]]);
   expect(workflow.nextSteps("automq/backend-finalize",[],retry)).toEqual([]);
   expect(workflow.wireFn("automq/infrastructure",{...retry,"red/event":"delete"})?.[1]).toBe("automq/backend-finalize");
@@ -39,4 +39,15 @@ test("fresh remote state permits creation but unreadable state fails closed", as
 test("renaming a tracked bucket must still refuse adoption of an existing destination", async () => {
   mocked = spyOn(runtime,"exec").mockResolvedValueOnce({exit:0,out:"",err:""}).mockResolvedValueOnce({exit:0,out:'aws_s3_bucket.application["data"]',err:""}).mockResolvedValueOnce({exit:0,out:JSON.stringify({values:{root_module:{resources:[{address:'aws_s3_bucket.application["data"]',values:{bucket:"old-data"}}]}}}),err:""}).mockResolvedValue({exit:0,out:"",err:""});
   await expect(storage.ownershipPreflight(opts)).rejects.toThrow("refuses to adopt");
+});
+
+test("GCS ownership probes fail closed and finalize the selected backend", async () => {
+  const gcs = {...opts,"automq-storage-provider":"gcs","google-project":"colors-508307","provider-backend":"gcs","gcs-bucket-mode":"managed"};
+  mocked = spyOn(runtime,"exec").mockImplementation(async (args) => ({exit:args[0] === "gcloud" ? 1 : 0,out:"",err:args[0] === "gcloud" ? "gs://owned-data not found: 404." : ""}));
+  await storage.ownershipPreflight(gcs);
+  expect(mocked.mock.calls.filter((call: any[]) => call[0][0] === "gcloud")).toHaveLength(2);
+  mocked.mockRestore();
+  mocked = spyOn(runtime,"exec").mockImplementation(async (args) => ({exit:args[0] === "gcloud" ? 1 : 0,out:"",err:"HTTPError 403: Forbidden"}));
+  await expect(storage.ownershipPreflight(gcs)).rejects.toThrow("refuses to adopt");
+  expect(workflow.wireFn("automq/infrastructure",{...gcs,"red/event":"delete"})?.[1]).toBe("automq/backend-finalize");
 });

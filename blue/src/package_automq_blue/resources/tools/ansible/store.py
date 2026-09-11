@@ -66,8 +66,17 @@ def get_json(s3, bucket, k):
     return json.loads(body)
 
 
+def _is_gcs(s3):
+    from urllib.parse import urlparse
+    return urlparse(s3.meta.endpoint_url).hostname == "storage.googleapis.com"
+
+
 def _sign_if_none_match(request, **_kwargs):
-    request.headers.add_header("If-None-Match", "*")
+    from urllib.parse import urlparse
+    if urlparse(request.url).hostname == "storage.googleapis.com":
+        request.headers.add_header("x-goog-if-generation-match", "0")
+    else:
+        request.headers.add_header("If-None-Match", "*")
 
 
 def put_json(s3, bucket, k, payload, if_absent=False):
@@ -426,7 +435,13 @@ def cmd_tls_fetch(args):
 
 def _etag(s3, bucket, k):
     try:
-        return s3.head_object(Bucket=bucket, Key=k).get("ETag")
+        response = s3.head_object(Bucket=bucket, Key=k)
+        if _is_gcs(s3):
+            generation = response.get("ResponseMetadata", {}).get("HTTPHeaders", {}).get("x-goog-generation")
+            if not generation:
+                raise RuntimeError("GCS object response omitted its generation")
+            return generation
+        return response.get("ETag")
     except ClientError as e:
         if e.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
             return None
@@ -436,7 +451,7 @@ def _etag(s3, bucket, k):
 def _put_if_match(s3, bucket, k, payload, etag):
     """Replace an object only if it still has the ETag we read."""
     def handler(request, **_kwargs):
-        request.headers.add_header("If-Match", etag)
+        request.headers.add_header("x-goog-if-generation-match" if _is_gcs(s3) else "If-Match", etag)
 
     s3.meta.events.register("before-sign.s3.PutObject", handler)
     try:
@@ -503,15 +518,16 @@ def cmd_lease_release(args):
     """
     s3 = client(args.endpoint, args.region)
     k = key(args.profile, "lease", f"{args.name}.json")
+    etag = _etag(s3, args.ops_bucket, k)
     held = get_json(s3, args.ops_bucket, k) or {}
-    if held.get("holder") != args.holder:
+    if etag is None or held.get("holder") != args.holder:
         print(json.dumps({"released": False, "holder": held.get("holder")}))
         return
-    try:
-        s3.delete_object(Bucket=args.ops_bucket, Key=k)
-    except ClientError:
-        pass
-    print(json.dumps({"released": True}))
+    # Conditional replacement avoids deleting a successor that acquired the
+    # lease after our read. A tombstone is immediately available for takeover.
+    released = _put_if_match(s3, args.ops_bucket, k,
+                             {"schema": SCHEMA, "holder": "", "at": 0, "ttl": 0}, etag)
+    print(json.dumps({"released": released}))
 
 
 def main():

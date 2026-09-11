@@ -1,0 +1,49 @@
+# Google Cloud AutoMQ live deployment. Non-secret desired state only.
+profile: automq-gcs-fixture
+workdir: WORKDIR
+provider-compute: google
+provider-dns: none
+automq-tls-mode: private-ca
+provider-backend: gcs
+compute-prevent-destroy: true
+
+gcs-bucket: automq-gcs-fixture-state-colors-example-us-central1
+gcs-region: us-central1
+gcs-bucket-mode: managed
+
+automq-storage-provider: gcs
+automq-storage-managed: true
+automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
+automq-node-count: 3
+automq-cluster-id: Vn4JS1TOSW6VmtoBbClErQ
+automq-host: automq-gcs-fixture.bigconfig.online
+automq-broker-name-prefix: b
+automq-letsencrypt-email: claude@ululi.it
+automq-lego-version: 5.4.0
+automq-kafka-port: 9092
+automq-internal-port: 9094
+automq-controller-port: 9093
+automq-sasl-user: automq
+automq-sasl-mechanism: SCRAM-SHA-512
+automq-heap-opts: "-Xms2g -Xmx2g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=3g"
+automq-client-topic-prefix: colors-
+automq-topic-partitions: 6
+automq-log-retention-hours: 168
+automq-data-r2-bucket: automq-gcs-fixture-data-colors-example-us-central1
+automq-ops-r2-bucket: automq-gcs-fixture-ops-colors-example-us-central1
+automq-r2-endpoint: https://storage.googleapis.com
+automq-r2-region: us-central1
+automq-wal-batch-interval-ms: 250
+automq-wal-max-bytes-in-batch: 8388608
+
+google-project: colors-example
+google-region: us-central1
+google-zone: us-central1-a
+google-machine-type: e2-standard-2
+google-image-project: ubuntu-os-cloud
+google-image-family: ubuntu-2404-lts-amd64
+google-image-id: projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260906
+google-subnet-cidr: 10.74.1.0/24
+google-boot-disk-size-gb: 40
+automq-ssh-sources: [0.0.0.0/0]
+automq-kafka-sources: [0.0.0.0/0]

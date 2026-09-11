@@ -68,7 +68,7 @@
   [opts]
   (vec
    (concat
-    (for [k (concat required (case (:provider-backend opts) "r2" [:r2-bucket :r2-endpoint] "s3" [:s3-bucket :s3-region] []))
+    (for [k (concat required (case (:provider-backend opts) "r2" [:r2-bucket :r2-endpoint] "s3" [:s3-bucket :s3-region] "gcs" [:gcs-bucket :gcs-region] []))
           :when (missing? (get opts k))]
       (str k " is required"))
     (when-not (contains? #{"cloudflare" "none"} (:provider-dns opts))
@@ -79,8 +79,8 @@
       [":automq-tls-mode private-ca requires :provider-dns none"])
     (when (and (= "none" (:provider-dns opts)) (not= "private-ca" (:automq-tls-mode opts)))
       [":provider-dns none requires :automq-tls-mode private-ca"])
-    (when-not (contains? #{"s3" "r2"} (:provider-backend opts))
-      [":provider-backend must be s3 or r2"])
+    (when-not (contains? #{"s3" "r2" "gcs"} (:provider-backend opts))
+      [":provider-backend must be s3, r2 or gcs"])
     ;; boolean?, not true?. The guard is lifted for exactly one run by
     ;; COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     ;; overlay as every other parameter — so demanding `true` here would reject
@@ -158,10 +158,13 @@
     ;; --- object storage
     (when (and (contains? opts :automq-storage-managed) (not (boolean? (:automq-storage-managed opts))))
       [":automq-storage-managed must be true or false"])
-    (when (and (:automq-storage-managed opts) (not= "s3" (:automq-storage-provider opts)))
-      ["managed storage requires :automq-storage-provider s3"])
-    (when (and (:automq-storage-managed opts) (= "auto" (:automq-r2-region opts)))
+    (when (and (:automq-storage-managed opts) (not (contains? #{"s3" "gcs"} (:automq-storage-provider opts))))
+      ["managed storage requires :automq-storage-provider s3 or gcs"])
+    (when (and (:automq-storage-managed opts) (= "s3" (:automq-storage-provider opts)) (= "auto" (:automq-r2-region opts)))
       ["managed S3 storage requires an AWS region in :automq-r2-region"])
+    (when (and (:automq-storage-managed opts) (= "gcs" (:automq-storage-provider opts))
+               (or (missing? (:google-project opts)) (not= "https://storage.googleapis.com" (:automq-r2-endpoint opts))))
+      ["managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com"])
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
                      (not (re-matches bucket-re (str (get opts k)))))]
@@ -177,7 +180,7 @@
     ;; is not a style question.
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
-                     (= (str (get opts k)) (str (get opts (if (= "s3" (:provider-backend opts)) :s3-bucket :r2-bucket)))))]
+                     (= (str (get opts k)) (str (get opts (keyword (str (:provider-backend opts) "-bucket"))))))]
       (str k " must not be the OpenTofu state bucket: AutoMQ writes keys at the bucket root"))
     (for [k [:automq-r2-endpoint]
           :when (and (not (missing? (get opts k)))
@@ -234,7 +237,7 @@
 (def required-tools ["tofu" "aws" "ansible-playbook" "ssh" "ssh-keygen" "curl" "openssl"])
 (defn runtime-errors
   ([opts] (runtime-errors opts process/run))
-  ([_ runner]
-   (vec (for [tool required-tools
+  ([opts runner]
+   (vec (for [tool (cond-> required-tools (= "gcs" (:automq-storage-provider opts)) (conj "gcloud"))
               :when (not= 0 (:exit (runner ["sh" "-c" "command -v \"$1\" >/dev/null 2>&1" "sh" tool] {})))]
           (str "required tool is not on PATH: " tool)))))

@@ -81,3 +81,21 @@
                                (= "aws" (first args)) {:exit 0 :out ""}
                                :else {:exit 0 :out ""}))]
     (is (thrown? Exception (storage/ownership-preflight! managed)))))
+
+(deftest gcs-storage-ownership-and-native-backend
+  (let [opts (assoc managed :automq-storage-provider "gcs" :google-project "colors-508307"
+                   :provider-backend "gcs" :gcs-bucket "automq-test-state" :gcs-region "us-central1"
+                   :gcs-bucket-mode "managed")
+        calls (atom [])]
+    (with-redefs [process/run (fn [args _]
+                              (swap! calls conj args)
+                              (if (= "gcloud" (first args)) {:exit 1 :err "gs://owned-data not found: 404."}
+                                  {:exit 0 :out ""}))]
+      (storage/ownership-preflight! opts)
+      (is (= 2 (count (filter #(= "gcloud" (first %)) @calls)))))
+    (with-redefs [process/run (fn [args _]
+                              (if (= "gcloud" (first args)) {:exit 1 :err "HTTPError 403: Forbidden"}
+                                  {:exit 0 :out ""}))]
+      (is (thrown? Exception (storage/ownership-preflight! opts))))
+    (is (= :automq/backend-finalize
+           (second (workflow/wire-fn :automq/infrastructure (assoc opts :green/event :delete)))))))

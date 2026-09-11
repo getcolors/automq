@@ -24,7 +24,7 @@ def aws_env(opts):
 
 
 def specs(opts):
-    return [{"template": {"name": "tools/storage/main.tf", "content": (Path(__file__).parent / "resources/tools/storage/main.tf").read_text()}, "target": directory(opts) + "/main.tf", "data": opts, "opts": PRESERVE_JINJA_DELIMITERS}]
+    return [{"template": {"name": "tools/storage/main.tf", "content": (Path(__file__).parent / "resources/tools/storage/main.tf").read_text()}, "target": directory(opts) + "/main.tf", "data": {**opts, "automq-storage-gcs": opts.get("automq-storage-provider") == "gcs"}, "opts": PRESERVE_JINJA_DELIMITERS}]
 
 
 async def ownership_preflight(opts):
@@ -42,10 +42,10 @@ async def ownership_preflight(opts):
             raise RuntimeError("managed storage state operation failed")
         resources = json.loads(shown.out).get("values", {}).get("root_module", {}).get("resources", [])
     for role, key in [("data", "automq-data-r2-bucket"), ("ops", "automq-ops-r2-bucket")]:
-        if any(resource.get("address") == f'aws_s3_bucket.application["{role}"]' and resource.get("values", {}).get("bucket") == opts[key] for resource in resources):
+        if any(resource.get("address") == f'{"google_storage_bucket" if opts.get("automq-storage-provider") == "gcs" else "aws_s3_bucket"}.application["{role}"]' and (resource.get("values", {}).get("bucket") or resource.get("values", {}).get("name")) == opts[key] for resource in resources):
             continue
-        probe = await runtime.exec(["aws", "s3api", "head-bucket", "--bucket", opts[key], "--region", opts["automq-r2-region"]], **config)
-        if not (probe.exit > 0 and re.search(r"\(404\)|Not Found|NoSuchBucket", probe.err or "")):
+        probe = await runtime.exec((["gcloud", "storage", "buckets", "describe", "gs://" + opts[key], "--project", opts["google-project"], "--format=json"] if opts.get("automq-storage-provider") == "gcs" else ["aws", "s3api", "head-bucket", "--bucket", opts[key], "--region", opts["automq-r2-region"]]), **config)
+        if not (probe.exit > 0 and re.search(r"\(404\)|Not Found|NoSuchBucket|HTTPError 404|not found: 404", probe.err or "")):
             raise RuntimeError("managed storage refuses to adopt an existing or inaccessible bucket")
 
 
@@ -59,7 +59,7 @@ async def storage_step(opts):
             await ownership_preflight(opts)
         return await tofu.tofu_with_spec(opts, documents, dir=directory(opts), env=aws_env(opts), output_key="automq/storage-credentials")
     except Exception:
-        return {**opts, "blue/exit": 1, "blue/err": "managed S3 storage failed; inspect bucket ownership, state access, and AWS permissions"}
+        return {**opts, "blue/exit": 1, "blue/err": "managed storage failed; inspect bucket ownership, state access, and provider permissions"}
 
 
 def credential_env(opts):

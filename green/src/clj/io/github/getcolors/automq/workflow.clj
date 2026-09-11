@@ -59,7 +59,7 @@
         (cond
           (and real? (= event :delete))
           (let [result (inspection/read-deployment opts (into {} env))]
-            (if (and (= "managed" (:s3-bucket-mode opts)) (not= "present" (:status result)))
+            (if (and (= "managed" (get opts (keyword (str (:provider-backend opts) "-bucket-mode")))) (not= "present" (:status result)))
               (assoc opts :automq/finalize-only true :green/exit 0)
             (case (:status result)
               "destroyed" (assoc opts :automq/already-destroyed true :green/exit 0)
@@ -103,7 +103,7 @@
       ;; address makes them point at somebody else's machine.
       :automq/dns [tools/dns-step (if (storage/managed? run-opts) :automq/storage :automq/infrastructure)]
       :automq/storage [storage/step :automq/infrastructure]
-      :automq/infrastructure (cond-> [tools/infrastructure-step] (= "managed" (:s3-bucket-mode run-opts)) (conj :automq/backend-finalize))
+      :automq/infrastructure (cond-> [tools/infrastructure-step] (= "managed" (get run-opts (keyword (str (:provider-backend run-opts) "-bucket-mode")))) (conj :automq/backend-finalize))
       :automq/backend-finalize [backend-finalize-step])
 
     (case step
@@ -119,9 +119,13 @@
       :automq/acceptance [tools/acceptance-step])))
 
 (defn backend-advice [tool]
-  (tofu/conventional-backend-advice
-   {:dir-fn #(tools/tool-dir % tool)
-    :key-fn #(str (:profile %) "/" tool ".tfstate")}))
+  (fn [opts]
+    ((if (= "gcs" (:provider-backend opts))
+       (tofu/gcs-backend-advice #(tools/tool-dir % tool)
+         #(hash-map :bucket (:gcs-bucket %) :prefix (str (:profile %) "/" tool ".tfstate")))
+       (tofu/conventional-backend-advice
+         {:dir-fn #(tools/tool-dir % tool)
+          :key-fn #(str (:profile %) "/" tool ".tfstate")})) opts)))
 
 (def side-effecting-steps
   [:automq/backend-finalize :automq/storage :automq/infrastructure :automq/dns :automq/ssh-config :automq/ansible

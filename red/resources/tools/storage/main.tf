@@ -1,4 +1,52 @@
-terraform {
+<% if automq-storage-gcs %>terraform {
+  required_providers {
+    google = { source = "hashicorp/google", version = "6.0.0" }
+  }
+}
+provider "google" { project = "<{ google-project }>" }
+locals {
+  buckets = { data = "<{ automq-data-r2-bucket }>", ops = "<{ automq-ops-r2-bucket }>" }
+}
+resource "google_storage_bucket" "application" {
+  for_each                    = local.buckets
+  name                        = each.value
+  location                    = "<{ automq-r2-region }>"
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = true
+  labels                      = { colors_profile = "<{ profile }>", colors_owner = "automq-storage" }
+  soft_delete_policy { retention_duration_seconds = 0 }
+  lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
+}
+resource "google_service_account" "application" {
+  account_id   = substr("<{ profile }>-storage", 0, 30)
+  display_name = "AutoMQ <{ profile }> storage"
+}
+resource "google_storage_bucket_iam_member" "application" {
+  for_each = google_storage_bucket.application
+  bucket   = each.value.name
+  role     = "roles/storage.objectAdmin"
+  member   = "serviceAccount:${google_service_account.application.email}"
+}
+resource "google_storage_bucket_iam_member" "bucket_metadata" {
+  for_each = google_storage_bucket.application
+  bucket   = each.value.name
+  role     = "roles/storage.legacyBucketReader"
+  member   = "serviceAccount:${google_service_account.application.email}"
+}
+resource "google_storage_hmac_key" "application" {
+  service_account_email = google_service_account.application.email
+  depends_on            = [google_storage_bucket_iam_member.application, google_storage_bucket_iam_member.bucket_metadata]
+}
+output "access_key_id" {
+  value     = google_storage_hmac_key.application.access_id
+  sensitive = true
+}
+output "secret_access_key" {
+  value     = google_storage_hmac_key.application.secret
+  sensitive = true
+}
+<% else %>terraform {
   required_providers {
     aws = { source = "hashicorp/aws", version = "6.31.0" }
   }
@@ -61,3 +109,4 @@ output "secret_access_key" {
   value     = aws_iam_access_key.application.secret
   sensitive = true
 }
+<% endif %>

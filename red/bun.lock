@@ -5,7 +5,7 @@
     "": {
       "name": "package-automq-red-dev",
       "dependencies": {
-        "colors-compute-red": "github:getcolors/colors-compute#87ec5661fc8807159419d90d437247f3503469c7",
+        "colors-compute-red": "github:getcolors/colors-compute#d2c75d7c2345950e7e38a3ad95ed58067fb88044",
         "package-once-red": "github:getcolors/once#10e525ae7c37130ab4d532b91c8d2ead94557cc8",
         "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
       },
@@ -62,7 +62,7 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
-    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#87ec566", { "dependencies": { "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e" } }, "getcolors-colors-compute-87ec566", "sha512-qZZu2pK5X6tL099Ym831Z/cmTaClOBnOE9LHMRf4/218I/kQzIEd9BRRB7p/zvuVKH8WuudwaqMwk1FIA7TRLg=="],
+    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#d2c75d7", { "dependencies": { "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e" } }, "getcolors-colors-compute-d2c75d7", "sha512-utiBw7E1SvQFxUuGp/YaB8aE4iuh+GqFjIbzDl7xj9Qwh/hNBEIiISIsnp0A+m2mgLvU/hcL0ZPhhA7QabqzKQ=="],
 
     "package-once-red": ["package-once-red@github:getcolors/once#10e525a", { "peerDependencies": { "red": "*" }, "optionalPeers": ["red"] }, "getcolors-once-10e525a", "sha512-7MNd1LFMFwWtMN99/cyv04BEYJcYgVUXGLZUfxxdW4iNX2dweJxaoLYuP87B71+ZmKcR36lASDeZS+ucW24Gzg=="],
 

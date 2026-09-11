@@ -1,0 +1,91 @@
+{
+  "locals": {
+    "public_key": "ssh-ed25519 PLACEHOLDER managed-by-colors"
+  },
+  "output": {
+    "params": {
+      "value": {
+        "ip": "${google_compute_address.node.address}",
+        "metadata": {
+          "address_id": "${google_compute_address.node.id}",
+          "instance_id": "${google_compute_instance.node.instance_id}",
+          "self_link": "${google_compute_instance.node.self_link}",
+          "subnetwork_id": "projects/colors-example-project/regions/europe-west1/subnetworks/example-network",
+          "zone": "us-central1-a"
+        },
+        "name": "${google_compute_instance.node.name}",
+        "node_id": "1",
+        "provider": "google",
+        "provider_id": "${google_compute_instance.node.id}",
+        "sudoer": "ubuntu",
+        "user": "ubuntu",
+        "vpc_ip": "${google_compute_instance.node.network_interface[0].network_ip}"
+      }
+    }
+  },
+  "provider": {
+    "google": {
+      "project": "colors-example",
+      "region": "us-central1",
+      "zone": "us-central1-a"
+    }
+  },
+  "resource": {
+    "google_compute_address": {
+      "node": {
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "name": "automq-gcs-fixture-1",
+        "region": "us-central1"
+      }
+    },
+    "google_compute_instance": {
+      "node": {
+        "boot_disk": [
+          {
+            "initialize_params": [
+              {
+                "image": "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260906",
+                "size": 40,
+                "type": "pd-balanced"
+              }
+            ]
+          }
+        ],
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "machine_type": "e2-standard-2",
+        "metadata": {
+          "block-project-ssh-keys": "true",
+          "enable-oslogin": "false",
+          "ssh-keys": "ubuntu:${trimspace(local.public_key)}"
+        },
+        "name": "automq-gcs-fixture-1",
+        "network_interface": [
+          {
+            "access_config": [
+              {
+                "nat_ip": "${google_compute_address.node.address}"
+              }
+            ],
+            "subnetwork": "projects/colors-example-project/regions/europe-west1/subnetworks/example-network"
+          }
+        ],
+        "tags": [
+          "automq-gcs-fixture-network"
+        ],
+        "zone": "us-central1-a"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "google": {
+        "source": "hashicorp/google",
+        "version": "6.0.0"
+      }
+    }
+  }
+}
