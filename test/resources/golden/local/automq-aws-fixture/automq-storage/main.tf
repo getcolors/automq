@@ -26,8 +26,12 @@ resource "aws_s3_bucket_public_access_block" "application" {
 resource "aws_s3_bucket_server_side_encryption_configuration" "application" {
   for_each = aws_s3_bucket.application
   bucket   = each.value.id
+  # S3 now creates buckets with SSE-C blocked and the bucket key off; declare
+  # both, or the provider plans to remove and re-add them on every converge.
   rule {
     apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+    blocked_encryption_types = ["SSE-C"]
+    bucket_key_enabled = false
   }
 }
 resource "aws_iam_user" "application" {
