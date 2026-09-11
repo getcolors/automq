@@ -28,6 +28,15 @@
     AUTOMQ_R2_SECRET_ACCESS_KEY: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}"
 
   tasks:
+    - name: Require a supported host architecture
+      ansible.builtin.assert:
+        that: ansible_architecture in ['x86_64', 'aarch64']
+        fail_msg: AutoMQ provisioning supports x86_64 and aarch64 hosts
+
+    - name: Select the host binary architecture
+      ansible.builtin.set_fact:
+        automq_host_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+
     # ---------------------------------------------------------------- host
 
     - name: Configure the Ubuntu security repository mirror
@@ -64,7 +73,7 @@
     - name: Add the Docker repository
       ansible.builtin.apt_repository:
         repo: >-
-          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          deb [arch={{ automq_host_arch }} signed-by=/etc/apt/keyrings/docker.asc]
           https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
         filename: docker
         state: present
@@ -289,7 +298,7 @@
 
     - name: Install lego
       ansible.builtin.unarchive:
-        src: "https://github.com/go-acme/lego/releases/download/v5.4.0/lego_v5.4.0_linux_amd64.tar.gz"
+        src: "https://github.com/go-acme/lego/releases/download/v5.4.0/lego_v5.4.0_linux_{{ automq_host_arch }}.tar.gz"
         dest: /usr/local/bin
         remote_src: true
         include: [lego]

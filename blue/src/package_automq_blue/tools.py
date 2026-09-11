@@ -237,6 +237,7 @@ def ansible_data(opts: dict) -> dict:
     opts = {key: value for key, value in opts.items() if key != "automq/storage-credentials"}
     names = [node["ip"] for node in nodes_] if opts.get("provider-dns") == "none" else cluster.certificate_names(opts)
     return {**opts,
+            "automq-storage-oci": opts.get("automq-storage-provider") == "oci",
             "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
             "node-count": cluster.node_count(opts),
             "quorum-voters": cluster.quorum_voters(opts, nodes_),

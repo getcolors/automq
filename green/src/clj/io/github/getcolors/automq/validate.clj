@@ -79,8 +79,8 @@
       [":automq-tls-mode private-ca requires :provider-dns none"])
     (when (and (= "none" (:provider-dns opts)) (not= "private-ca" (:automq-tls-mode opts)))
       [":provider-dns none requires :automq-tls-mode private-ca"])
-    (when-not (contains? #{"s3" "r2" "gcs"} (:provider-backend opts))
-      [":provider-backend must be s3, r2 or gcs"])
+    (when-not (contains? #{"s3" "r2" "gcs" "oci"} (:provider-backend opts))
+      [":provider-backend must be s3, r2, gcs or oci"])
     ;; boolean?, not true?. The guard is lifted for exactly one run by
     ;; COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     ;; overlay as every other parameter — so demanding `true` here would reject
@@ -162,13 +162,18 @@
     ;; --- object storage
     (when (and (contains? opts :automq-storage-managed) (not (boolean? (:automq-storage-managed opts))))
       [":automq-storage-managed must be true or false"])
-    (when (and (:automq-storage-managed opts) (not (contains? #{"s3" "gcs"} (:automq-storage-provider opts))))
-      ["managed storage requires :automq-storage-provider s3 or gcs"])
+    (when (and (:automq-storage-managed opts) (not (contains? #{"s3" "gcs" "oci"} (:automq-storage-provider opts))))
+      ["managed storage requires :automq-storage-provider s3, gcs or oci"])
     (when (and (:automq-storage-managed opts) (= "s3" (:automq-storage-provider opts)) (= "auto" (:automq-r2-region opts)))
       ["managed S3 storage requires an AWS region in :automq-r2-region"])
     (when (and (:automq-storage-managed opts) (= "gcs" (:automq-storage-provider opts))
                (or (missing? (:google-project opts)) (not= "https://storage.googleapis.com" (:automq-r2-endpoint opts))))
       ["managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com"])
+    (when (and (:automq-storage-managed opts) (= "oci" (:automq-storage-provider opts))
+               (or (some #(missing? (get opts %)) [:oci-tenancy-id :oci-compartment-id :oci-namespace :oci-config-file-profile :automq-r2-region])
+                   (= "auto" (:automq-r2-region opts))
+                   (not= (:automq-r2-endpoint opts) (str "https://" (:oci-namespace opts) ".compat.objectstorage." (:automq-r2-region opts) ".oraclecloud.com"))))
+      ["managed OCI storage requires tenancy, compartment, namespace, config profile, region and the matching OCI compatibility endpoint"])
     (for [k [:automq-data-r2-bucket :automq-ops-r2-bucket]
           :when (and (not (missing? (get opts k)))
                      (not (re-matches bucket-re (str (get opts k)))))]
@@ -242,6 +247,6 @@
 (defn runtime-errors
   ([opts] (runtime-errors opts process/run))
   ([opts runner]
-   (vec (for [tool (cond-> required-tools (= "gcs" (:automq-storage-provider opts)) (conj "gcloud"))
+   (vec (for [tool (cond-> required-tools (= "gcs" (:automq-storage-provider opts)) (conj "gcloud") (= "oci" (:automq-storage-provider opts)) (conj "oci"))
               :when (not= 0 (:exit (runner ["sh" "-c" "command -v \"$1\" >/dev/null 2>&1" "sh" tool] {})))]
           (str "required tool is not on PATH: " tool)))))

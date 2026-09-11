@@ -26,8 +26,19 @@
   environment:
     AUTOMQ_R2_ACCESS_KEY_ID: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}"
     AUTOMQ_R2_SECRET_ACCESS_KEY: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}"
-
+<% if automq-storage-oci %>    AUTOMQ_OCI_SIGNING_KEY_B64: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_B64') }}"
+    AUTOMQ_OCI_SIGNING_KEY_ID: "{{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_ID') }}"
+<% endif %>
   tasks:
+    - name: Require a supported host architecture
+      ansible.builtin.assert:
+        that: ansible_architecture in ['x86_64', 'aarch64']
+        fail_msg: AutoMQ provisioning supports x86_64 and aarch64 hosts
+
+    - name: Select the host binary architecture
+      ansible.builtin.set_fact:
+        automq_host_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] }}"
+
     # ---------------------------------------------------------------- host
 
 <% if automq-apt-security-mirror %>    - name: Configure the Ubuntu security repository mirror
@@ -43,7 +54,8 @@
           - curl
           - openssl
           - python3
-          - ufw
+<% if automq-storage-oci %>          - python3-cryptography
+<% endif %>          - ufw
           # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
           # PEP 668, and a managed package is one fewer thing to break on an
           # unattended upgrade.
@@ -64,7 +76,7 @@
     - name: Add the Docker repository
       ansible.builtin.apt_repository:
         repo: >-
-          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          deb [arch={{ automq_host_arch }} signed-by=/etc/apt/keyrings/docker.asc]
           https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
         filename: docker
         state: present
@@ -161,9 +173,22 @@
         content: |
           AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
           AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
-      no_log: true
+<% if automq-storage-oci %>          AUTOMQ_OCI_SIGNING_KEY_B64={{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_B64') }}
+          AUTOMQ_OCI_SIGNING_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_ID') }}
+<% endif %>      no_log: true
 
-    # --------------------------------------------------------------- secrets
+<% if automq-storage-oci %>    - name: Wait for OCI credentials and verify conditional storage writes
+      ansible.builtin.command:
+        argv:
+          - timeout
+          - '900'
+          - /bin/bash
+          - -c
+          - 'until /usr/local/bin/automq-store preconditions; do sleep 15; done'
+      changed_when: false
+      run_once: true
+
+<% endif %>    # --------------------------------------------------------------- secrets
 
     # Which node already holds the bundle decides everything below. Generating
     # on node 0 unconditionally is a data-loss bug in disguise: rebuild node 0
@@ -289,7 +314,7 @@
 
     - name: Install lego
       ansible.builtin.unarchive:
-        src: "https://github.com/go-acme/lego/releases/download/v<{ automq-lego-version }>/lego_v<{ automq-lego-version }>_linux_amd64.tar.gz"
+        src: "https://github.com/go-acme/lego/releases/download/v<{ automq-lego-version }>/lego_v<{ automq-lego-version }>_linux_{{ automq_host_arch }}.tar.gz"
         dest: /usr/local/bin
         remote_src: true
         include: [lego]
@@ -308,7 +333,9 @@
           CLOUDFLARE_DNS_API_TOKEN={{ lookup('env', 'COLORS_PAR_CLOUDFLARE_API_TOKEN') }}
           AUTOMQ_R2_ACCESS_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID') }}
           AUTOMQ_R2_SECRET_ACCESS_KEY={{ lookup('env', 'COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY') }}
-      when: automq_cert_issuer | bool
+<% if automq-storage-oci %>          AUTOMQ_OCI_SIGNING_KEY_B64={{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_B64') }}
+          AUTOMQ_OCI_SIGNING_KEY_ID={{ lookup('env', 'COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_ID') }}
+<% endif %>      when: automq_cert_issuer | bool
       no_log: true
 
     - name: Issue or renew the certificate

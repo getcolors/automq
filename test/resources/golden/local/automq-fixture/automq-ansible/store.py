@@ -101,6 +101,44 @@ def _is_gcs(s3):
     return urlparse(s3.meta.endpoint_url).hostname == "storage.googleapis.com"
 
 
+def _oci_endpoint(s3):
+    from urllib.parse import urlparse
+    import re
+    host = urlparse(s3.meta.endpoint_url).hostname or ""
+    return re.fullmatch(r"([a-zA-Z0-9]+)\.compat\.objectstorage\.([a-z0-9-]+)\.oraclecloud\.com", host)
+
+
+def _oci_request(s3, method, bucket, k, body=None, etag=None):
+    """Native OCI conditional writes; its S3 endpoint ignores PUT If-Match."""
+    import base64
+    from email.utils import formatdate
+    from urllib.parse import quote
+    from urllib.request import Request, urlopen
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    endpoint = _oci_endpoint(s3)
+    if not endpoint:
+        raise RuntimeError("native OCI request requires an OCI compatibility endpoint")
+    namespace, region = endpoint.groups()
+    host = "objectstorage." + region + ".oraclecloud.com"
+    path = "/n/" + quote(namespace, safe="") + "/b/" + quote(bucket, safe="") + "/o/" + quote(k, safe="")
+    headers = {"date": formatdate(usegmt=True), "host": host,
+               "(request-target)": method.lower() + " " + path}
+    if body is not None:
+        headers.update({"x-content-sha256": base64.b64encode(hashlib.sha256(body).digest()).decode(),
+                        "content-type": "application/json", "content-length": str(len(body))})
+    if etag is not None:
+        headers["if-match"] = etag
+    private_key = serialization.load_pem_private_key(base64.b64decode(os.environ["AUTOMQ_OCI_SIGNING_KEY_B64"]), password=None)
+    signed = "\n".join(name + ": " + value for name, value in headers.items()).encode()
+    signature = base64.b64encode(private_key.sign(signed, padding.PKCS1v15(), hashes.SHA256())).decode()
+    authorization = 'Signature version="1",keyId="' + os.environ["AUTOMQ_OCI_SIGNING_KEY_ID"] + '",algorithm="rsa-sha256",headers="' + " ".join(headers) + '",signature="' + signature + '"'
+    del headers["(request-target)"]
+    headers["authorization"] = authorization
+    return urlopen(Request("https://" + host + path, data=body, headers=headers, method=method), timeout=60)
+
+
 def _sign_if_none_match(request, **_kwargs):
     from urllib.parse import urlparse
     if urlparse(request.url).hostname == "storage.googleapis.com":
@@ -464,6 +502,18 @@ def cmd_tls_fetch(args):
 
 
 def _etag(s3, bucket, k):
+    if _oci_endpoint(s3):
+        from urllib.error import HTTPError
+        try:
+            with _oci_request(s3, "HEAD", bucket, k) as response:
+                value = response.headers.get("etag")
+                if not value:
+                    raise RuntimeError("OCI object response omitted its ETag")
+                return value
+        except HTTPError as error:
+            if error.code == 404:
+                return None
+            raise
     try:
         response = s3.head_object(Bucket=bucket, Key=k)
         if _is_gcs(s3):
@@ -480,6 +530,15 @@ def _etag(s3, bucket, k):
 
 def _put_if_match(s3, bucket, k, payload, etag):
     """Replace an object only if it still has the ETag we read."""
+    if _oci_endpoint(s3):
+        from urllib.error import HTTPError
+        try:
+            with _oci_request(s3, "PUT", bucket, k, json.dumps(payload, sort_keys=True, indent=2).encode(), etag):
+                return True
+        except HTTPError as error:
+            if error.code == 412:
+                return False
+            raise
     def handler(request, **_kwargs):
         _set_header(request, "x-goog-if-generation-match" if _is_gcs(s3) else "If-Match", etag)
 
@@ -560,6 +619,30 @@ def cmd_lease_release(args):
     print(json.dumps({"released": released}))
 
 
+def cmd_preconditions(args):
+    """Wait for scoped credentials and prove both kinds of conditional write."""
+    s3 = client(args.endpoint, args.region)
+    for bucket in (args.data_bucket, args.ops_bucket):
+        s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+    k = key(args.profile, "preconditions", uuid.uuid4().hex + ".json")
+    created = False
+    try:
+        created = put_json(s3, args.ops_bucket, k, {"value": "first"}, if_absent=True)
+        if not created or put_json(s3, args.ops_bucket, k, {"value": "competitor"}, if_absent=True):
+            raise RuntimeError("object storage did not enforce conditional create")
+        etag = _etag(s3, args.ops_bucket, k)
+        if not _put_if_match(s3, args.ops_bucket, k, {"value": "second"}, etag):
+            raise RuntimeError("object storage rejected the current ETag")
+        if _put_if_match(s3, args.ops_bucket, k, {"value": "stale"}, etag):
+            raise RuntimeError("object storage did not enforce conditional replacement")
+        if get_json(s3, args.ops_bucket, k) != {"value": "second"}:
+            raise RuntimeError("conditional write changed the wrong value")
+        print("conditional create and replacement verified")
+    finally:
+        if created:
+            s3.delete_object(Bucket=args.ops_bucket, Key=k)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--profile", required=True)
@@ -570,6 +653,7 @@ def main():
     p.add_argument("--ops-bucket", default="")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    sub.add_parser("preconditions").set_defaults(fn=cmd_preconditions)
     sub.add_parser("adopt").set_defaults(fn=cmd_adopt)
     sub.add_parser("ready").set_defaults(fn=cmd_ready)
     sub.add_parser("genesis-state").set_defaults(fn=cmd_genesis_state)

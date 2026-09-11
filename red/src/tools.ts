@@ -256,6 +256,7 @@ export function ansibleData(opts: Opts): Opts {
   return {
     ...opts,
     "ssh-keygen": validate.keygen(opts) || Boolean(opts["ssh-private-key-path"]),
+    "automq-storage-oci": opts["automq-storage-provider"] === "oci",
     "node-count": cluster.nodeCount(opts),
     "quorum-voters": cluster.quorumVoters(opts, list),
     "certificate-names": names,

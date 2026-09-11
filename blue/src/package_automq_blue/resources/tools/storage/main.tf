@@ -1,4 +1,98 @@
-<% if automq-storage-gcs %>terraform {
+<% if automq-storage-oci %>terraform {
+  required_providers {
+    oci = { source = "oracle/oci", version = "7.32.0" }
+    tls = { source = "hashicorp/tls", version = "4.1.0" }
+  }
+}
+provider "oci" {
+  config_file_profile = "<{ oci-config-file-profile }>"
+  region              = "<{ automq-r2-region }>"
+  auth                = "<{ oci-auth }>"
+}
+provider "oci" {
+  alias               = "home"
+  config_file_profile = "<{ oci-config-file-profile }>"
+  region              = "<{ oci-home-region }>"
+  auth                = "<{ oci-auth }>"
+}
+locals {
+  buckets = { data = "<{ automq-data-r2-bucket }>", ops = "<{ automq-ops-r2-bucket }>" }
+  policy_scope = "<{ oci-compartment-id }>" == "<{ oci-tenancy-id }>" ? "tenancy" : "compartment id <{ oci-compartment-id }>"
+  tags = { "colors-profile" = "<{ profile }>", "colors-owner" = "automq-storage" }
+}
+resource "oci_objectstorage_bucket" "application" {
+  for_each       = local.buckets
+  compartment_id = "<{ oci-compartment-id }>"
+  namespace      = "<{ oci-namespace }>"
+  name           = each.value
+  access_type    = "NoPublicAccess"
+  storage_tier   = "Standard"
+  versioning     = "Disabled"
+  freeform_tags  = local.tags
+  lifecycle { prevent_destroy = <{ compute-prevent-destroy }> }
+}
+resource "oci_identity_user" "application" {
+  provider       = oci.home
+  compartment_id = "<{ oci-tenancy-id }>"
+  name           = "<{ profile }>-automq-storage"
+  description    = "AutoMQ application bucket access"
+  freeform_tags  = local.tags
+}
+resource "oci_identity_group" "application" {
+  provider       = oci.home
+  compartment_id = "<{ oci-tenancy-id }>"
+  name           = "<{ profile }>-automq-storage"
+  description    = "AutoMQ application bucket access"
+  freeform_tags  = local.tags
+}
+resource "oci_identity_user_group_membership" "application" {
+  provider = oci.home
+  user_id  = oci_identity_user.application.id
+  group_id = oci_identity_group.application.id
+}
+resource "oci_identity_policy" "application" {
+  provider       = oci.home
+  compartment_id = "<{ oci-compartment-id }>"
+  name           = "<{ profile }>-automq-storage"
+  description    = "Access only the AutoMQ data and ops buckets"
+  freeform_tags  = local.tags
+  statements = flatten([for bucket in oci_objectstorage_bucket.application : [
+    "Allow group id ${oci_identity_group.application.id} to read buckets in ${local.policy_scope} where target.bucket.name = '${bucket.name}'",
+    "Allow group id ${oci_identity_group.application.id} to manage objects in ${local.policy_scope} where target.bucket.name = '${bucket.name}'"
+  ]])
+}
+resource "oci_identity_customer_secret_key" "application" {
+  provider     = oci.home
+  display_name = "AutoMQ bucket access"
+  user_id      = oci_identity_user.application.id
+  depends_on   = [oci_identity_policy.application, oci_identity_user_group_membership.application]
+}
+resource "tls_private_key" "application" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+resource "oci_identity_api_key" "application" {
+  provider  = oci.home
+  user_id   = oci_identity_user.application.id
+  key_value = tls_private_key.application.public_key_pem
+}
+output "oci_signing_key_b64" {
+  value     = base64encode(tls_private_key.application.private_key_pem)
+  sensitive = true
+}
+output "oci_signing_key_id" {
+  value     = "<{ oci-tenancy-id }>/${oci_identity_user.application.id}/${oci_identity_api_key.application.fingerprint}"
+  sensitive = true
+}
+output "access_key_id" {
+  value     = oci_identity_customer_secret_key.application.id
+  sensitive = true
+}
+output "secret_access_key" {
+  value     = oci_identity_customer_secret_key.application.key
+  sensitive = true
+}
+<% else %><% if automq-storage-gcs %>terraform {
   required_providers {
     google = { source = "hashicorp/google", version = "6.0.0" }
   }
@@ -109,4 +203,4 @@ output "secret_access_key" {
   value     = aws_iam_access_key.application.secret
   sensitive = true
 }
-<% endif %>
+<% endif %><% endif %>

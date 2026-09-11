@@ -1,5 +1,6 @@
 (ns io.github.getcolors.automq.storage-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [green.process :as process]
             [green.scaffold :as scaffold]
             [green.tofu :as tofu]
@@ -99,3 +100,17 @@
       (is (thrown? Exception (storage/ownership-preflight! opts))))
     (is (= :automq/backend-finalize
            (second (workflow/wire-fn :automq/infrastructure (assoc opts :green/event :delete)))))))
+
+(deftest oci-cleanup-renders-before-purge-and-keeps-backend-credentials-out-of-arguments
+  (let [opts (assoc managed :automq-storage-provider "oci" :provider-backend "oci" :green/event :delete
+                   :oci-access-key-id "BACKEND-ID" :oci-secret-access-key "BACKEND-SECRET")
+        calls (atom [])]
+    (with-redefs [scaffold/scaffold (fn [render-opts _] (is (= :create (:green/event render-opts))) render-opts)
+                  process/run (fn [args options]
+                                (swap! calls conj args)
+                                (is (= ["python3" "oci-storage.py" "cleanup"] (subvec args 0 3)))
+                                (is (= "BACKEND-SECRET" (get-in options [:extra-env "AWS_SECRET_ACCESS_KEY"])))
+                                (is (not (str/includes? (last args) "BACKEND-SECRET")))
+                                {:exit 0 :out ""})
+                  tofu/tofu-with-spec (fn [run-opts _ _] (is (= 1 (count @calls))) (assoc run-opts :green/exit 0))]
+      (is (= 0 (:green/exit (storage/step opts)))))))

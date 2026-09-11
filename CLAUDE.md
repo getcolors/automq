@@ -4,7 +4,7 @@
 
 `automq` is a tri-colour Package Skill for a three-node [AutoMQ](https://github.com/AutoMQ/automq)
 cluster: Kafka 3.9.1 wire protocol, KRaft combined `broker,controller`
-roles, and Cloudflare R2, AWS S3, or Google Cloud Storage as the storage tier. `green/` (Clojure) is canonical;
+roles, and Cloudflare R2, AWS S3, Google Cloud Storage, or OCI Object Storage as the storage tier. `green/` (Clojure) is canonical;
 `red/` (TypeScript) and `blue/` (Python) are behavioural ports of it, and
 `scripts/parity.sh` is what makes "behavioural" checkable — one fixture, three
 colours, byte-identical trees. The colors-compute library manages the private
@@ -108,9 +108,19 @@ Adopted R2 mode remains the default: both buckets must exist and be **empty**.
 Opt-in `automq-storage-managed: true` with `automq-storage-provider: s3` creates
 two private S3 buckets and an IAM identity restricted to them. Provider `gcs`
 creates private GCS buckets and a bucket-scoped service account with an HMAC key.
-Both providers keep application storage resources in a separate
+OCI creates native private buckets and a user/group/policy/customer secret key
+and API signing key restricted to them. OCI compatibility PUT ignores
+`If-Match`; restart lease replacement must use native OCI ETags and signed
+HEAD/PUT. Never send a native ETag to the compatibility API or replace this
+with an unchecked S3 PUT. An OCI pre-genesis gate proves the preconditions
+and waits up to 15 minutes for newly created credentials.
+All managed providers keep application storage resources in a separate
 `automq-storage` state. Managed delete removes the buckets and all contents
-after broker cleanup; adopted storage survives delete. Never change an adopted
+after broker cleanup; adopted storage survives delete. OCI has no provider `force_destroy`.
+Its helper verifies bucket name, namespace and compartment against this stage's state, verifies its live immutable bucket OCID and ownership tags, then removes
+objects and aborts multipart uploads before OpenTofu
+destroys the buckets and identity. A successful paginated native bucket list
+proves first-create absence; `NotAuthorizedOrNotFound` does not. Never change an adopted
 deployment to managed mode to import existing buckets: first create refuses
 pre-existing buckets.
 AutoMQ writes `<hash>/_kafka_<cluster-id>/…` at the bucket root and supports no
@@ -176,13 +186,15 @@ reading local keys or calling a provider.
 ## Commands
 
 ```sh
-cd green && bb test          # 58 tests
+cd green && bb test          # 55 tests
 cd green && bb golden        # two fixtures: keygen and opt-out
 cd green && bb golden:accept # only after reading the diff
 cd red   && bun test && bun run typecheck
 cd blue  && uv run pytest
 ./scripts/parity.sh          # green, red and blue render the same bytes
 python3 test/test_store_preconditions.py # GCS conditional writes through botocore
+python3 test/test_oci_preconditions.py   # Native OCI signatures and stale ETags
+python3 test/test_oci_storage.py         # Ownership, live identity and guarded purge
 ./scripts/launcher.sh        # all three copied payloads
 ./green build                # ./red and ./blue take the same verbs
 ./green create --dry-run

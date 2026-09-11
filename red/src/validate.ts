@@ -89,8 +89,8 @@ export function stateErrors(opts: Opts): string[] {
   if (opts["provider-dns"] === "none" && opts["automq-tls-mode"] !== "private-ca") errors.push(":provider-dns none requires :automq-tls-mode private-ca");
   if (opts["automq-tls-mode"] === "private-ca" && opts["provider-dns"] !== "none") errors.push(":automq-tls-mode private-ca requires :provider-dns none");
   if ("automq-apt-security-mirror" in opts && !/^https?:\/\/[a-z0-9.-]+(?::[0-9]+)?\/[A-Za-z0-9._~/-]+$(?![\s\S])/.test(String(opts["automq-apt-security-mirror"]))) errors.push(":automq-apt-security-mirror must be an HTTP or HTTPS repository URL");
-  if (!["s3", "r2", "gcs"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be s3, r2 or gcs");
+  if (!["s3", "r2", "gcs", "oci"].includes(String(opts["provider-backend"]))) {
+    errors.push(":provider-backend must be s3, r2, gcs or oci");
   }
   // A boolean, not `true`. The guard is lifted for exactly one run by
   // COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
@@ -180,7 +180,8 @@ export function stateErrors(opts: Opts): string[] {
 
   // --- object storage
   if ("automq-storage-managed" in opts && typeof opts["automq-storage-managed"] !== "boolean") errors.push(":automq-storage-managed must be true or false");
-  if (opts["automq-storage-managed"] && !["s3", "gcs"].includes(String(opts["automq-storage-provider"]))) errors.push("managed storage requires :automq-storage-provider s3 or gcs");
+  if (opts["automq-storage-managed"] && !["s3", "gcs", "oci"].includes(String(opts["automq-storage-provider"]))) errors.push("managed storage requires :automq-storage-provider s3, gcs or oci");
+  if (opts["automq-storage-managed"] && opts["automq-storage-provider"] === "oci" && (["oci-tenancy-id","oci-compartment-id","oci-namespace","oci-config-file-profile","automq-r2-region"].some(key=>missing(opts[key])) || opts["automq-r2-region"] === "auto" || opts["automq-r2-endpoint"] !== `https://${opts["oci-namespace"]}.compat.objectstorage.${opts["automq-r2-region"]}.oraclecloud.com`)) errors.push("managed OCI storage requires tenancy, compartment, namespace, config profile, region and the matching OCI compatibility endpoint");
   if (opts["automq-storage-managed"] && opts["automq-storage-provider"] === "gcs" && (missing(opts["google-project"]) || opts["automq-r2-endpoint"] !== "https://storage.googleapis.com")) errors.push("managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com");
   if (opts["automq-storage-managed"] && opts["automq-storage-provider"] === "s3" && opts["automq-r2-region"] === "auto") errors.push("managed S3 storage requires an AWS region in :automq-r2-region");
   for (const key of ["automq-data-r2-bucket", "automq-ops-r2-bucket"]) {
@@ -268,5 +269,5 @@ async function commandPresent(runner: Runner, command: string): Promise<boolean>
 }
 
 export async function runtimeErrors(opts:Opts,runner:Runner=runtime.exec):Promise<string[]> {
- const errors:string[]=[];for(const tool of [...requiredTools,...(opts["automq-storage-provider"] === "gcs" ? ["gcloud"] : [])])if(!await commandPresent(runner,tool))errors.push('required tool is not on PATH: '+tool);return errors;
+ const errors:string[]=[];for(const tool of [...requiredTools,...(opts["automq-storage-provider"] === "gcs" ? ["gcloud"] : opts["automq-storage-provider"] === "oci" ? ["oci"] : [])])if(!await commandPresent(runner,tool))errors.push('required tool is not on PATH: '+tool);return errors;
 }

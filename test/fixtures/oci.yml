@@ -1,0 +1,53 @@
+# OCI AutoMQ render fixture. No provider calls.
+profile: automq-oci-fixture
+workdir: WORKDIR
+provider-compute: oci
+provider-dns: none
+automq-tls-mode: private-ca
+provider-backend: oci
+compute-prevent-destroy: true
+
+
+automq-storage-provider: oci
+automq-storage-managed: true
+automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
+automq-node-count: 3
+automq-cluster-id: bzC0Rv_0SBuO0ykEvTn1sg
+automq-host: automq-oci.bigconfig.online
+automq-broker-name-prefix: b
+automq-letsencrypt-email: claude@ululi.it
+automq-lego-version: 5.4.0
+automq-kafka-port: 9092
+automq-internal-port: 9094
+automq-controller-port: 9093
+automq-sasl-user: automq
+automq-sasl-mechanism: SCRAM-SHA-512
+automq-heap-opts: "-Xms2g -Xmx2g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=3g"
+automq-client-topic-prefix: colors-
+automq-topic-partitions: 6
+automq-log-retention-hours: 168
+automq-data-r2-bucket: automq-oci-fixture-data-example
+automq-ops-r2-bucket: automq-oci-fixture-ops-example
+automq-r2-endpoint: https://example.compat.objectstorage.eu-frankfurt-1.oraclecloud.com
+automq-r2-region: eu-frankfurt-1
+automq-wal-batch-interval-ms: 250
+automq-wal-max-bytes-in-batch: 8388608
+
+oci-config-file-profile: DEFAULT
+oci-region: eu-frankfurt-1
+oci-home-region: eu-frankfurt-1
+oci-namespace: example
+oci-tenancy-id: ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+oci-compartment-id: ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+oci-subnet-id: ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+oci-availability-domain: XquT:EU-FRANKFURT-1-AD-1
+oci-shape: VM.Standard.A2.Flex
+oci-ocpus: 1
+oci-boot-volume-size-in-gbs: 50
+oci-boot-volume-vpus-per-gb: 10
+oci-image-id: ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+automq-ssh-sources: [0.0.0.0/0]
+automq-kafka-sources: [0.0.0.0/0]
+oci-auth: SecurityToken
+oci-bucket: automq-oci-fixture-state-example
+oci-bucket-mode: managed

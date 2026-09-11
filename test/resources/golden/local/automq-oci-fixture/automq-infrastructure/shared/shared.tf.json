@@ -1,0 +1,114 @@
+{
+  "data": {
+    "oci_core_subnet": {
+      "existing": {
+        "subnet_id": "ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  "output": {
+    "params": {
+      "value": {
+        "network_cidr": "${data.oci_core_subnet.existing.cidr_block}",
+        "nsg_ids": [
+          "${oci_core_network_security_group.network.id}"
+        ],
+        "provider": "oci",
+        "subnet_id": "${data.oci_core_subnet.existing.id}",
+        "vcn_id": "${data.oci_core_subnet.existing.vcn_id}"
+      }
+    }
+  },
+  "provider": {
+    "oci": {
+      "config_file_profile": "DEFAULT"
+    }
+  },
+  "resource": {
+    "oci_core_network_security_group": {
+      "network": {
+        "compartment_id": "ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "display_name": "automq-oci-fixture-firewall",
+        "vcn_id": "${data.oci_core_subnet.existing.vcn_id}"
+      }
+    },
+    "oci_core_network_security_group_security_rule": {
+      "rules": {
+        "destination": "${each.value.direction == \"EGRESS\" ? each.value.cidr : null}",
+        "destination_type": "${each.value.direction == \"EGRESS\" ? \"CIDR_BLOCK\" : null}",
+        "direction": "${each.value.direction}",
+        "dynamic": {
+          "tcp_options": {
+            "content": {
+              "destination_port_range": {
+                "max": "${tcp_options.value.to_port}",
+                "min": "${tcp_options.value.from_port}"
+              }
+            },
+            "for_each": "${each.value.protocol == \"6\" ? [each.value] : []}"
+          },
+          "udp_options": {
+            "content": {
+              "destination_port_range": {
+                "max": "${udp_options.value.to_port}",
+                "min": "${udp_options.value.from_port}"
+              }
+            },
+            "for_each": "${each.value.protocol == \"17\" ? [each.value] : []}"
+          }
+        },
+        "for_each": {
+          "controller:private": {
+            "cidr": "private",
+            "direction": "INGRESS",
+            "from_port": 9093,
+            "protocol": "6",
+            "to_port": 9093
+          },
+          "internal:private": {
+            "cidr": "private",
+            "direction": "INGRESS",
+            "from_port": 9094,
+            "protocol": "6",
+            "to_port": 9094
+          },
+          "kafka:0.0.0.0/0": {
+            "cidr": "0.0.0.0/0",
+            "direction": "INGRESS",
+            "from_port": 9092,
+            "protocol": "6",
+            "to_port": 9092
+          },
+          "outbound-all": {
+            "cidr": "0.0.0.0/0",
+            "direction": "EGRESS",
+            "from_port": null,
+            "protocol": "all",
+            "to_port": null
+          },
+          "ssh:0.0.0.0/0": {
+            "cidr": "0.0.0.0/0",
+            "direction": "INGRESS",
+            "from_port": 22,
+            "protocol": "6",
+            "to_port": 22
+          }
+        },
+        "network_security_group_id": "${oci_core_network_security_group.network.id}",
+        "protocol": "${each.value.protocol}",
+        "source": "${each.value.direction == \"INGRESS\" ? (each.value.cidr == \"private\" ? data.oci_core_subnet.existing.cidr_block : each.value.cidr) : null}",
+        "source_type": "${each.value.direction == \"INGRESS\" ? \"CIDR_BLOCK\" : null}",
+        "stateless": false
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "oci": {
+        "source": "oracle/oci",
+        "version": "8.4.0"
+      }
+    },
+    "required_version": ">= 1.8.0"
+  }
+}

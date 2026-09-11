@@ -211,6 +211,7 @@
   (let [nodes* (nodes opts)
         certificate-names (if (= "none" (:provider-dns opts)) (mapv :ip nodes*) (cluster/certificate-names opts))]
     (assoc (dissoc opts :automq/storage-credentials)
+           :automq-storage-oci (= "oci" (:automq-storage-provider opts))
            :ssh-keygen (or (validate/keygen? opts) (boolean (:ssh-private-key-path opts)))
            :node-count (cluster/node-count opts)
            :quorum-voters (cluster/quorum-voters opts nodes*)

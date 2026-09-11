@@ -16,7 +16,7 @@ together, so one run is enough to fix a file.
 
 Compute credentials and provider options follow the version of
 [colors-compute](https://github.com/getcolors/colors-compute) pinned by this
-skill. The library also owns R2, S3 and native GCS remote state configuration.
+skill. The library also owns R2, S3 native GCS and OCI remote state configuration.
 Managed application storage generates its scoped access keys; the operator does
 not supply `COLORS_PAR_AUTOMQ_R2_*` in that mode. Cloudflare credentials are
 required only when `provider-dns: cloudflare`.
@@ -120,7 +120,7 @@ Machines are named `<profile>-<node-id>` unless the provider name override is
 set. The library owns the managed profile keypair, or uses explicitly configured
 external keys and their private identity path.
 
-Set `provider-backend` to `r2`, `s3`, or `gcs`. Compute uses separate shared and per-node
+Set `provider-backend` to `r2`, `s3`, `gcs`, or `oci`. Compute uses separate shared and per-node
 state objects plus a deployment journal. Existing monolithic compute state is
 refused and requires an explicit migration before create or delete.
 
@@ -178,3 +178,50 @@ security `Suites` line in `/etc/apt/sources.list.d/ubuntu.sources`. The task
 preserves the security suite, components and Ubuntu archive signing key.
 Omit this option to retain the image's repository configuration. Use a mirror
 that serves signed metadata for the selected Ubuntu security suite.
+
+## Managed OCI Object Storage
+
+Managed OCI storage uses `automq-storage-provider: oci` and
+`automq-storage-managed: true`. The package creates private data and ops
+buckets plus a user, group, bucket-scoped policy, customer secret key and RSA API signing key.
+Use `oci-tenancy-id`, `oci-compartment-id`, `oci-namespace`,
+`oci-config-file-profile`, and the OCI region in `automq-r2-region`.
+The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
+Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
+SecurityToken` for a session profile. API key authentication is the default.
+State uses a third OCI bucket through `provider-backend: oci`, `oci-bucket`,
+`oci-region`, and `oci-bucket-mode: managed`. OpenTofu accesses that bucket
+through OCI's S3 compatibility API. It does not create AWS resources.
+The state credential pair is `COLORS_PAR_OCI_ACCESS_KEY_ID` and
+`COLORS_PAR_OCI_SECRET_ACCESS_KEY`; application credentials are generated
+separately and grant access only to the data and ops buckets.
+
+The application stage refuses to adopt existing OCI buckets. It checks every
+page of a successful native bucket listing; OCI's ambiguous
+`NotAuthorizedOrNotFound` response does not prove a bucket is absent.
+On guarded delete, the package stops brokers, checks recorded bucket names,
+namespaces, compartments, live bucket OCIDs and ownership tags, aborts incomplete multipart uploads and deletes
+objects. OpenTofu then removes buckets and application IAM resources. The
+compute library finalizes the state bucket last. Existing adopted storage
+keeps its original deletion policy.
+
+The public deployment repository is
+[automq-oci](https://github.com/getcolors/automq-oci). See its evidence before
+claiming live acceptance for a particular pin.
+
+OCI's S3 compatibility endpoint enforces conditional create but ignored
+`If-Match` on PUT in the live negative test. Lease renewal, expired lease
+takeover and release therefore use native OCI HEAD/PUT with native ETags and
+the scoped application's API signing key. Broker data still uses the S3
+compatibility API. The signing key stays in encrypted state and root-only
+`store.env` and `cert.env`; it is not a Docker environment variable.
+
+Before genesis, an OCI-only gate verifies conditional create, exact native
+ETag replacement, stale replacement rejection and the retained object body.
+It removes its temporary key and retries credential propagation for up to
+15 minutes. Missing signing credentials fail before Ansible starts.
+
+The host play supports `x86_64` and `aarch64`. Docker's repository architecture
+and lego's binary name follow the host. The pinned AutoMQ image must include
+that platform. `oci-memory-in-gbs` is optional in the pinned compute library;
+omit it to request the shape's API default when OCI rejects an explicit ratio.

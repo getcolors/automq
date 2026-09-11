@@ -2,6 +2,11 @@
 import os
 from pathlib import Path
 import subprocess
+import re
+import html
+
+from blue.renderer import render
+from blue.scaffold import PRESERVE_JINJA_DELIMITERS
 
 import pytest
 import yaml
@@ -10,6 +15,16 @@ ROOT = Path(__file__).resolve().parents[2]
 TREES = [ROOT / "green/src/resources/io/github/getcolors/automq/tools",
          ROOT / "red/resources/tools",
          ROOT / "blue/src/package_automq_blue/resources/tools"]
+
+
+
+def load_play(tree):
+    source = (tree / "ansible/main.yml").read_text()
+    # Render package conditionals before YAML parsing; individual shell tests
+    # still substitute their own ports and broker addresses below.
+    values = {key: "<{ " + key + " }>" for key in re.findall(r"<\{ ([a-z0-9-]+) \}>", source)}
+    values["automq-apt-security-mirror"] = None
+    return yaml.safe_load(html.unescape(render(source, values, PRESERVE_JINJA_DELIMITERS)))[0]
 
 
 def run_shell(tmp_path, script, commands):
@@ -24,7 +39,7 @@ def run_shell(tmp_path, script, commands):
 
 @pytest.mark.parametrize("tree", TREES)
 def test_host_firewall_failure_stops_convergence(tree, tmp_path):
-    play = yaml.safe_load((tree / "ansible/main.yml").read_text())[0]
+    play = load_play(tree)
     assert play["become"] is True
     assert yaml.safe_load((tree / "ansible/cleanup.yml").read_text())[0]["become"] is True
     task = next(t for t in play["tasks"] if t["name"] == "Open the cluster ports in the host firewall")
@@ -41,7 +56,7 @@ def test_host_firewall_failure_stops_convergence(tree, tmp_path):
 @pytest.mark.parametrize("tree", TREES)
 @pytest.mark.parametrize("recovers", [True, False])
 def test_restart_holds_throttle_until_readiness_or_failure(tree, tmp_path, recovers):
-    play = yaml.safe_load((tree / "ansible/main.yml").read_text())[0]
+    play = load_play(tree)
     task = next(t for t in play["tasks"] if t["name"].startswith("Converge existing brokers"))
     assert task["throttle"] == 1
     script = task["ansible.builtin.shell"].replace("{{ automq_vpc_ip }}", "10.42.0.5").replace("<{ internal-port }>", "9094").replace("{{ render_config.changed | lower }}", "true")
@@ -103,7 +118,7 @@ def test_kafka_cli_heap_does_not_inherit_the_broker_heap(tree, tmp_path):
 
 @pytest.mark.parametrize("tree", TREES)
 def test_compose_recreation_waits_without_a_duplicate_restart(tree, tmp_path):
-    play = yaml.safe_load((tree / "ansible/main.yml").read_text())[0]
+    play = load_play(tree)
     task = next(t for t in play["tasks"] if t["name"].startswith("Converge existing brokers"))
     script = task["ansible.builtin.shell"].replace("{{ automq_vpc_ip }}", "10.42.0.5").replace("<{ internal-port }>", "9094").replace("{{ render_config.changed | lower }}", "true")
     calls = tmp_path / "calls"
@@ -121,7 +136,7 @@ def test_stopped_formatted_cluster_starts_in_parallel(tmp_path):
     ansible = shutil.which("ansible-playbook")
     if not ansible:
         pytest.skip("Ansible is needed to execute the playbook's recovery condition")
-    source = yaml.safe_load((TREES[0] / "ansible/main.yml").read_text())[0]
+    source = load_play(TREES[0])
     choose = next(t for t in source["tasks"] if t["name"].startswith("Choose parallel recovery"))
     expression = choose["ansible.builtin.set_fact"]["automq_parallel_start"]
     expression = expression.replace("ansible_play_hosts", "test_hosts").replace("hostvars", "test_hostvars")
@@ -140,7 +155,7 @@ def test_stopped_formatted_cluster_starts_in_parallel(tmp_path):
 
 @pytest.mark.parametrize("tree", TREES)
 def test_parallel_recovery_applies_changed_config_before_common_readiness(tree, tmp_path):
-    play = yaml.safe_load((tree / "ansible/main.yml").read_text())[0]
+    play = load_play(tree)
     task = next(t for t in play["tasks"] if t["name"].startswith("Start the brokers when"))
     script = task["ansible.builtin.shell"].replace("{{ render_config.changed | lower }}", "true")
     calls = tmp_path / "calls"

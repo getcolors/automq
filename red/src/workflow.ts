@@ -6,7 +6,7 @@ import { preflight, type PreflightContext } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
 import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
-import {read_deployment, finalize_backend} from "colors-compute-red";
+import {read_deployment, finalize_backend, backend_plan} from "colors-compute-red";
 import * as cluster from "./cluster.ts";
 import * as ssh from "./ssh.ts";
 import * as sshConfig from "./ssh-config.ts";
@@ -110,7 +110,9 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
 }
 
 export function backendAdvice(tool: string) {
-  return (opts: Opts) => opts["provider-backend"] === "gcs"
+  return (opts: Opts) => opts["provider-backend"] === "oci"
+    ? tofu.s3BackendAdvice((o: Opts) => tools.toolDir(o, tool), (o: Opts) => (backend_plan(o,`${o.profile}/${tool}.tfstate`).config as any).terraform.backend.s3)(opts)
+    : opts["provider-backend"] === "gcs"
     ? tofu.gcsBackendAdvice((o: Opts) => tools.toolDir(o, tool), (o: Opts) => ({bucket:o["gcs-bucket"],prefix:`${o.profile}/${tool}.tfstate` }))(opts)
     : tofu.conventionalBackendAdvice({
     dir: (opts) => tools.toolDir(opts, tool),

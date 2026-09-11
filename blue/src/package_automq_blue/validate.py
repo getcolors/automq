@@ -110,8 +110,8 @@ def state_errors(opts: dict) -> list[str]:
         errors.append(":automq-tls-mode private-ca requires :provider-dns none")
     if "automq-apt-security-mirror" in opts and not re.fullmatch(r"https?://[a-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._~/-]+", str(opts["automq-apt-security-mirror"])):
         errors.append(":automq-apt-security-mirror must be an HTTP or HTTPS repository URL")
-    if opts.get("provider-backend") not in ("s3", "r2", "gcs"):
-        errors.append(":provider-backend must be s3, r2 or gcs")
+    if opts.get("provider-backend") not in ("s3", "r2", "gcs", "oci"):
+        errors.append(":provider-backend must be s3, r2, gcs or oci")
     # A boolean, not `True`. The guard is lifted for exactly one run by
     # COLORS_PAR_COMPUTE_PREVENT_DESTROY=false, which arrives through the same
     # overlay as every other parameter — so demanding `true` here would reject
@@ -192,8 +192,10 @@ def state_errors(opts: dict) -> list[str]:
     # --- object storage
     if "automq-storage-managed" in opts and not isinstance(opts["automq-storage-managed"], bool):
         errors.append(":automq-storage-managed must be true or false")
-    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") not in ("s3", "gcs"):
-        errors.append("managed storage requires :automq-storage-provider s3 or gcs")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") not in ("s3", "gcs", "oci"):
+        errors.append("managed storage requires :automq-storage-provider s3, gcs or oci")
+    if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "oci" and (any(missing(opts.get(key)) for key in ["oci-tenancy-id", "oci-compartment-id", "oci-namespace", "oci-config-file-profile", "automq-r2-region"]) or opts.get("automq-r2-region") == "auto" or opts.get("automq-r2-endpoint") != f"https://{opts.get('oci-namespace')}.compat.objectstorage.{opts.get('automq-r2-region')}.oraclecloud.com"):
+        errors.append("managed OCI storage requires tenancy, compartment, namespace, config profile, region and the matching OCI compatibility endpoint")
     if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "gcs" and (missing(opts.get("google-project")) or opts.get("automq-r2-endpoint") != "https://storage.googleapis.com"):
         errors.append("managed GCS storage requires :google-project and :automq-r2-endpoint https://storage.googleapis.com")
     if opts.get("automq-storage-managed") and opts.get("automq-storage-provider") == "s3" and opts.get("automq-r2-region") == "auto":
@@ -277,6 +279,6 @@ async def _command_present(runner, command: str) -> bool:
 
 async def runtime_errors(opts, runner=None):
     runner = runner or runtime.exec
-    tools = [*required_tools, *(["gcloud"] if opts.get("automq-storage-provider") == "gcs" else [])]
+    tools = [*required_tools, *(["gcloud"] if opts.get("automq-storage-provider") == "gcs" else ["oci"] if opts.get("automq-storage-provider") == "oci" else [])]
     present = {tool: await _command_present(runner, tool) for tool in tools}
     return [f"required tool is not on PATH: {tool}" for tool in tools if not present[tool]]

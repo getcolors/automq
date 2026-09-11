@@ -1,0 +1,69 @@
+{
+  "output": {
+    "params": {
+      "value": {
+        "instance_id": "${oci_core_instance.node.id}",
+        "ip": "${oci_core_instance.node.public_ip}",
+        "metadata": {
+          "availability_domain": "${oci_core_instance.node.availability_domain}",
+          "image_id": "${local.image_id}"
+        },
+        "name": "${oci_core_instance.node.display_name}",
+        "node_id": "1",
+        "provider": "oci",
+        "provider_id": "${oci_core_instance.node.id}",
+        "sudoer": "ubuntu",
+        "uid": "1001",
+        "user": "ubuntu",
+        "vpc_ip": "${oci_core_instance.node.private_ip}"
+      }
+    }
+  },
+  "provider": {
+    "oci": {
+      "config_file_profile": "DEFAULT"
+    }
+  },
+  "resource": {
+    "oci_core_instance": {
+      "node": {
+        "availability_domain": "XquT:EU-FRANKFURT-1-AD-1",
+        "compartment_id": "ocid1.tenancy.oc1..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "create_vnic_details": {
+          "assign_public_ip": true,
+          "nsg_ids": [
+            "ocid1.networksecuritygroup.oc1.eu-frankfurt-1.example"
+          ],
+          "subnet_id": "ocid1.subnet.oc1.eu-frankfurt-1.example"
+        },
+        "display_name": "automq-oci-fixture-1",
+        "lifecycle": {
+          "prevent_destroy": true
+        },
+        "metadata": {
+          "ssh_authorized_keys": "ssh-ed25519 PLACEHOLDER managed-by-colors"
+        },
+        "shape": "VM.Standard.A2.Flex",
+        "shape_config": {
+          "memory_in_gbs": null,
+          "ocpus": 1
+        },
+        "source_details": {
+          "boot_volume_size_in_gbs": 50,
+          "boot_volume_vpus_per_gb": 10,
+          "source_id": "${local.image_id}",
+          "source_type": "image"
+        }
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "oci": {
+        "source": "oracle/oci",
+        "version": "8.4.0"
+      }
+    },
+    "required_version": ">= 1.8.0"
+  }
+}

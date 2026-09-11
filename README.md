@@ -3,7 +3,7 @@
 A [getcolors](https://www.getcolors.ai/) Package Skill that provisions a
 three-node [AutoMQ](https://github.com/AutoMQ/automq) cluster: the
 Kafka 3.9.1 wire protocol, KRaft combined `broker,controller` roles, and
-Cloudflare R2, managed AWS S3, or managed Google Cloud Storage as the storage tier.
+Cloudflare R2, managed AWS S3, managed Google Cloud Storage, or managed OCI Object Storage as the storage tier.
 
 It ships in all three colours — `green/` (Clojure), `red/` (TypeScript) and
 `blue/` (Python) — which render byte-identical artifacts from one `colors.yml`.
@@ -71,7 +71,30 @@ provisioning. Owned GCS buckets disable soft deletion and are removed with
 their contents during guarded delete. See the package configuration reference
 for required project APIs and ownership checks.
 
-For AWS-only operation without DNS credentials, set `provider-dns: none` and
+Managed OCI storage uses `automq-storage-provider: oci` and
+`automq-storage-managed: true`. The package creates private data and ops
+buckets plus a user, group, bucket-scoped policy, customer secret key and RSA API signing key.
+Use `oci-tenancy-id`, `oci-compartment-id`, `oci-namespace`,
+`oci-config-file-profile`, and the OCI region in `automq-r2-region`.
+The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
+Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
+SecurityToken` for a session profile. API key authentication is the default.
+State uses a third OCI bucket through `provider-backend: oci`, `oci-bucket`,
+`oci-region`, and `oci-bucket-mode: managed`. OpenTofu accesses that bucket
+through OCI's S3 compatibility API. It does not create AWS resources.
+The state credential pair is `COLORS_PAR_OCI_ACCESS_KEY_ID` and
+`COLORS_PAR_OCI_SECRET_ACCESS_KEY`; application credentials are generated
+separately and grant access only to the data and ops buckets.
+
+Docker and lego use the host architecture, `amd64` or `arm64`; unsupported
+architectures fail before installation. The AutoMQ image pin must contain
+the selected platform.
+
+OCI lease replacement uses native signed HEAD/PUT because the compatibility
+endpoint ignores PUT `If-Match`. An OCI-only gate proves conditional writes
+before genesis and waits up to 15 minutes for new credentials to propagate.
+
+For operation without DNS credentials, set `provider-dns: none` and
 `automq-tls-mode: private-ca`. Brokers advertise public IPs and acceptance
 exports the public CA to `.colors/<profile>/automq-acceptance/ca.crt`. Clients
 must trust that CA, for example with kcat `-X ssl.ca.location=<ca.crt>`.

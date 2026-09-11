@@ -12,7 +12,8 @@
             [io.github.getcolors.automq.ssh-config :as ssh-config]
             [io.github.getcolors.automq.tools :as tools]
             [io.github.getcolors.automq.validate :as validate]
-            [io.github.getcolors.compute-inspection :as inspection]))
+            [io.github.getcolors.compute-inspection :as inspection]
+            [io.github.getcolors.compute :as compute]))
 
 (def defaults
   {:provider-compute validate/default-compute-provider
@@ -120,10 +121,14 @@
 
 (defn backend-advice [tool]
   (fn [opts]
-    ((if (= "gcs" (:provider-backend opts))
+    ((cond
+       (= "oci" (:provider-backend opts))
+       (tofu/s3-backend-advice #(tools/tool-dir % tool)
+         #(get-in (compute/backend-plan % (str (:profile %) "/" tool ".tfstate")) [:config :terraform :backend :s3]))
+       (= "gcs" (:provider-backend opts))
        (tofu/gcs-backend-advice #(tools/tool-dir % tool)
          #(hash-map :bucket (:gcs-bucket %) :prefix (str (:profile %) "/" tool ".tfstate")))
-       (tofu/conventional-backend-advice
+       :else (tofu/conventional-backend-advice
          {:dir-fn #(tools/tool-dir % tool)
           :key-fn #(str (:profile %) "/" tool ".tfstate")})) opts)))
 

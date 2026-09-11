@@ -1,4 +1,4 @@
-"""Deployment-owned S3 application buckets and scoped credentials."""
+"""Deployment-owned application buckets and scoped credentials."""
 import re
 import json
 from pathlib import Path
@@ -20,14 +20,28 @@ def directory(opts):
 
 def aws_env(opts):
     mapping = {"aws-access-key-id": "AWS_ACCESS_KEY_ID", "aws-secret-access-key": "AWS_SECRET_ACCESS_KEY", "aws-session-token": "AWS_SESSION_TOKEN"}
+    if opts.get("provider-backend") == "oci":
+        mapping = {"oci-access-key-id": "AWS_ACCESS_KEY_ID", "oci-secret-access-key": "AWS_SECRET_ACCESS_KEY"}
     return {variable: str(opts[key]) for key, variable in mapping.items() if opts.get(key)}
 
 
 def specs(opts):
-    return [{"template": {"name": "tools/storage/main.tf", "content": (Path(__file__).parent / "resources/tools/storage/main.tf").read_text()}, "target": directory(opts) + "/main.tf", "data": {**opts, "automq-storage-gcs": opts.get("automq-storage-provider") == "gcs"}, "opts": PRESERVE_JINJA_DELIMITERS}]
+    result = [{"template": {"name": "tools/storage/main.tf", "content": (Path(__file__).parent / "resources/tools/storage/main.tf").read_text()}, "target": directory(opts) + "/main.tf", "data": {**opts, "automq-storage-gcs": opts.get("automq-storage-provider") == "gcs", "automq-storage-oci": opts.get("automq-storage-provider") == "oci", "oci-auth": opts.get("oci-auth", "APIKey"), "oci-home-region": opts.get("oci-home-region", opts.get("automq-r2-region"))}, "opts": PRESERVE_JINJA_DELIMITERS}]
+    if opts.get("automq-storage-provider") == "oci":
+        result.append({"template": {"name": "tools/storage/oci-storage.py", "content": (Path(__file__).parent / "resources/tools/storage/oci-storage.py").read_text()}, "target": directory(opts) + "/oci-storage.py", "data": opts, "opts": PRESERVE_JINJA_DELIMITERS})
+    return result
+
+
+async def oci_operation(opts, action):
+    values = {key: opts.get(key) for key in ["profile", "oci-auth", "oci-config-file-profile", "oci-namespace", "oci-compartment-id", "automq-r2-region", "automq-data-r2-bucket", "automq-ops-r2-bucket", "compute-prevent-destroy"]}
+    result = await runtime.exec(["python3", "oci-storage.py", action, json.dumps(values)], cwd=directory(opts), env=aws_env(opts))
+    if result.exit:
+        raise RuntimeError("OCI storage operation failed")
 
 
 async def ownership_preflight(opts):
+    if opts.get("automq-storage-provider") == "oci":
+        return await oci_operation(opts, "preflight")
     config = {"cwd": directory(opts), "env": aws_env(opts)}
     result = await runtime.exec(["tofu", "init", "-input=false", "-no-color"], **config)
     if result.exit:
@@ -54,6 +68,9 @@ async def storage_step(opts):
         return {**opts, "blue/exit": 0}
     try:
         documents = specs(opts)
+        if opts.get("blue/event") == "delete" and opts.get("automq-storage-provider") == "oci":
+            scaffold({**opts, "blue/event": "create"}, documents)
+            await oci_operation(opts, "cleanup")
         if opts.get("blue/event") == "create":
             scaffold(opts, documents)
             await ownership_preflight(opts)
@@ -66,6 +83,6 @@ def credential_env(opts):
     credentials = opts.get("automq/storage-credentials", {})
     access = credentials.get("access_key_id")
     secret = credentials.get("secret_access_key")
-    if not access or not secret or not access.strip() or not secret.strip():
+    if not access or not secret or not access.strip() or not secret.strip() or (opts.get("automq-storage-provider") == "oci" and (not credentials.get("oci_signing_key_b64") or not credentials.get("oci_signing_key_id"))):
         raise RuntimeError("managed storage credentials unavailable")
-    return {"COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID": access, "COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY": secret, "ANSIBLE_HOST_KEY_CHECKING": "False"}
+    return {"COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID": access, "COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY": secret, "COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_B64": credentials.get("oci_signing_key_b64", ""), "COLORS_PAR_AUTOMQ_OCI_SIGNING_KEY_ID": credentials.get("oci_signing_key_id", ""), "ANSIBLE_HOST_KEY_CHECKING": "False"}

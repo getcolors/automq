@@ -23,7 +23,7 @@ accept=0
 [[ ${1:-} == --accept ]] && accept=1
 
 status=0
-for variant in colors optout aws gcs; do
+for variant in colors optout aws gcs oci; do
   fixture="$tmp/$variant.yml"
   sed "s#WORKDIR#$tmp/work#" "$root/test/fixtures/$variant.yml" > "$fixture"
   sed -i "s#^workdir: .colors#workdir: $tmp/work#" "$fixture"
@@ -33,7 +33,7 @@ for variant in colors optout aws gcs; do
   actual="$tmp/work/$profile"
   golden="$root/test/resources/golden/local/$profile"
 
-  if [[ $variant != aws && $variant != gcs ]]; then python3 "$root/scripts/check-ipv6-policy.py" "$actual"; fi
+  if [[ $variant != aws && $variant != gcs && $variant != oci ]]; then python3 "$root/scripts/check-ipv6-policy.py" "$actual"; fi
 
   # No rendered artefact may carry a real secret into a committed golden.
   # Checked before --accept copies anything. POSIX grep on purpose: a missing

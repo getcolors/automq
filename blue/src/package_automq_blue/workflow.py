@@ -9,7 +9,7 @@ from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
 from blue.workflow import advice_add, failed, workflow
 from colors_compute.inspection import read_deployment
-from colors_compute import finalize_backend
+from colors_compute import finalize_backend, backend_plan
 
 from . import cluster, ssh, ssh_config, tools, validate, storage
 
@@ -119,7 +119,8 @@ def backend_advice(tool: str):
     gcs = tofu.gcs_backend_advice(
         lambda o: tools.tool_dir(o, tool),
         lambda o: {"bucket": o["gcs-bucket"], "prefix": f"{o.get('profile') or ''}/{tool}.tfstate"})
-    return lambda opts: gcs(opts) if opts.get("provider-backend") == "gcs" else conventional(opts)
+    oci = tofu.s3_backend_advice(lambda o: tools.tool_dir(o, tool), lambda o: backend_plan(o, f"{o.get('profile') or ''}/{tool}.tfstate")["config"]["terraform"]["backend"]["s3"])
+    return lambda opts: oci(opts) if opts.get("provider-backend") == "oci" else gcs(opts) if opts.get("provider-backend") == "gcs" else conventional(opts)
 
 
 side_effecting = ["automq/infrastructure", "automq/dns", "automq/ssh-config",

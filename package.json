@@ -28,6 +28,6 @@
     "parity": "./scripts/parity.sh"
   },
   "dependencies": {
-    "colors-compute-red": "github:getcolors/colors-compute#d2c75d7c2345950e7e38a3ad95ed58067fb88044"
+    "colors-compute-red": "github:getcolors/colors-compute#c6e7b486c631e620d457db39c8c7143510c12897"
   }
 }

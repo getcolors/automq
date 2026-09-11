@@ -92,3 +92,26 @@ def test_each_tofu_stage_keys_its_own_state():
     assert all(tool.startswith("automq-") for tool in
                [tools.infrastructure_tool, tools.dns_tool, tools.ansible_tool,
                 tools.ansible_local_tool, tools.acceptance_tool])
+
+
+def test_oci_signing_secrets_reach_store_units_and_preconditions_precede_genesis():
+    import yaml
+    from blue.scaffold import render_template
+    configured = {**opts, 'automq-storage-provider': 'oci', 'automq-storage-managed': True,
+                  'automq/storage-credentials': {'oci_signing_key_b64': 'PRIVATE-SIGNING-KEY'}}
+    spec = next(s for s in tools.ansible_specs(configured) if str(s['target']).endswith('/main.yml'))
+    rendered = render_template(spec['template'], spec['data'], spec['opts'])
+    assert 'PRIVATE-SIGNING-KEY' not in rendered
+    play = yaml.safe_load(rendered)[0]
+    assert 'AUTOMQ_OCI_SIGNING_KEY_B64' in play['environment']
+    tasks = play['tasks']
+    probe_index = next(i for i, t in enumerate(tasks) if t['name'] == 'Wait for OCI credentials and verify conditional storage writes')
+    genesis_index = next(i for i, t in enumerate(tasks) if t['name'] == 'Probe whether this cluster has ever been initialized')
+    assert probe_index < genesis_index
+    assert tasks[probe_index]['ansible.builtin.command']['argv'][:2] == ['timeout', '900']
+    for name in ['Write the storage credential environment for systemd units', "Write the issuer's ACME environment"]:
+        task = next(t for t in tasks if t['name'] == name)
+        assert task['no_log'] and task['ansible.builtin.copy']['mode'] == '0600'
+        assert 'AUTOMQ_OCI_SIGNING_KEY_B64=' in task['ansible.builtin.copy']['content']
+    compose = next(t for t in tasks if t['name'] == 'Write the Compose environment')
+    assert 'AUTOMQ_OCI_SIGNING_KEY' not in compose['ansible.builtin.copy']['content']
