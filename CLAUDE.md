@@ -98,6 +98,12 @@ the pinned tag** when bumping `automq-image`.
   keeps its data, so anything counting absolute totals — or assuming which node
   leads a partition — passes the first time and fails forever after. Recreate
   the gate's topic and tag records per run.
+- **Literal-IP TLS identities do not require reverse DNS.** Verify the IP SAN
+  with OpenSSL `-verify_ip`; reserve hostname resolution for DNS identities.
+- **Crash recovery starts before the fault.** Kill the selected partition leader
+  with `docker kill --signal KILL`, start the timer before that command and
+  prove the container stays stopped until the recovery checks finish. A graceful
+  stop can transfer leadership before it returns and is not crash evidence.
 - **Never run `build` while a converge is in flight.** `.colors/` is live input
   to the running stage; re-rendering it under a running script makes bash
   resume mid-token and report a syntax error in a valid file.
@@ -118,6 +124,9 @@ and API signing key restricted to them. OCI compatibility PUT ignores
 HEAD/PUT. Never send a native ETag to the compatibility API or replace this
 with an unchecked S3 PUT. An OCI pre-genesis gate proves the preconditions
 and waits up to 15 minutes for newly created credentials.
+A local readiness ledger records exact probe keys before writes. Cleanup debt
+blocks later probes until deletion and absence are verified; ledger identity
+errors stop immediately. Never ignore readiness prefixes during adoption.
 All managed providers keep application storage resources in a separate
 `automq-storage` state. Managed delete removes the buckets and all contents
 after broker cleanup; adopted storage survives delete. OCI has no provider `force_destroy`.

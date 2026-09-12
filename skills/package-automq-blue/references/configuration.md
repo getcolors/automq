@@ -201,6 +201,10 @@ PUT/GET/DELETE probes against both application buckets before conditional
 writes are tested. A successful listing alone did not prove GetObject was
 ready in the live run. Authentication failures retry only inside the bounded
 pre-genesis readiness gate; ownership and genesis refusals remain failures.
+Readiness records each exact random probe key in a root-owned local ledger
+before writing. Retries must remove recorded probes and verify absence before
+starting new ones. A ledger for a different storage identity fails immediately;
+the package never sweeps a prefix or relaxes bucket adoption to ignore debris.
 The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
 Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
 SecurityToken` for a session profile. API key authentication is the default.
@@ -241,3 +245,9 @@ and lego's binary name follow the host. The pinned AutoMQ image must include
 that platform. `oci-memory-in-gbs` is optional in the pinned compute library;
 omit it to request the shape's API default. Omission did not resolve the
 observed A2 ratio rejection, so do not treat it as a verified repair.
+
+Public acceptance verifies literal-IP endpoints against certificate IP SANs
+without requiring reverse DNS. Its failover gate selects the actual partition
+leader, starts the recovery timer before an abrupt Docker KILL and verifies the
+victim stays stopped until the outage checks finish. Graceful-stop timing from
+earlier acceptance scripts does not prove abrupt crash recovery.

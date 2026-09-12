@@ -190,7 +190,7 @@
           - '900'
           - /bin/bash
           - -c
-          - 'until /usr/local/bin/automq-store preconditions; do sleep 15; done'
+          - 'while true; do /usr/local/bin/automq-store preconditions; rc=$?; [ "$rc" -eq 0 ] && exit 0; [ "$rc" -eq 2 ] && exit 2; sleep 15; done'
       changed_when: false
       run_once: true
 

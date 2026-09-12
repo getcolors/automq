@@ -113,8 +113,13 @@ kc() {
 
 # --- 7: names resolve and the certificate they serve validates ---------------
 for name in "${CERT_NAMES[@]}"; do
-  if ! getent hosts "$name" >/dev/null; then bad "$name does not resolve"; continue; fi
-  if [ '<{ automq-tls-mode }>' = private-ca ]; then identity=(-verify_ip "$name"); else identity=(-verify_hostname "$name"); fi
+  if [ '<{ automq-tls-mode }>' = private-ca ]; then
+    # Literal advertised addresses do not need reverse DNS. Verify their IP SAN.
+    identity=(-verify_ip "$name")
+  else
+    if ! getent hosts "$name" >/dev/null; then bad "$name does not resolve"; continue; fi
+    identity=(-verify_hostname "$name")
+  fi
   if echo | bounded 30 openssl s_client "${VERIFY_ARGS[@]}" "${identity[@]}" -connect "${name}:<{ kafka-port }>" -servername "$name" \
        -verify_return_error >/dev/null 2>&1; then
     ok "$name serves a valid certificate"
@@ -252,14 +257,18 @@ else
   ok "100 pre-failure records are readable before the kill"
 
   stopped_node="$victim"
-  if ! on "$victim" "sudo docker stop automq" >/dev/null 2>&1; then
-    bad "could not stop node $victim; failover was not exercised"
+  killed_at=$SECONDS
+  if ! on "$victim" "sudo docker kill --signal KILL automq" >/dev/null 2>&1; then
+    bad "could not kill node $victim; failover was not exercised"
     exit 1
   fi
-  killed_at=$SECONDS
+  if [ "$(on "$victim" "sudo docker inspect --format '{{.State.Running}}' automq" 2>/dev/null)" != false ]; then
+    bad "node $victim did not remain stopped after the abrupt fault"
+    exit 1
+  fi
 
   recovered=""
-  DEADLINE=$((SECONDS + 300))
+  DEADLINE=$((killed_at + 300))
   while [ "$SECONDS" -lt "$DEADLINE" ]; do
     if echo "during-$RUN" | kc -P -t "$TOPIC" -p "$victim_partition" 2>/dev/null; then
       recovered=$((SECONDS - killed_at)); break
@@ -295,6 +304,10 @@ else
   [ "$kept" -ge 100 ] && ok "all 100 pre-failure records survived the leader's death" \
     || bad "only ${kept} of 100 pre-failure records were readable within 120s of the failover"
 
+  if [ "$(on "$victim" "sudo docker inspect --format '{{.State.Running}}' automq" 2>/dev/null)" != false ]; then
+    bad "node $victim restarted before the fault-window checks completed"
+    exit 1
+  fi
   if ! on "$victim" "sudo docker start automq" >/dev/null 2>&1; then
     bad "could not restart node $victim after the fault injection"
     exit 1

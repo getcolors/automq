@@ -20,9 +20,13 @@ here prints one.
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
+import re
+import tempfile
 import sys
 import time
 import uuid
@@ -619,27 +623,114 @@ def cmd_lease_release(args):
     print(json.dumps({"released": released}))
 
 
-def _probe_bucket_io(s3, bucket, profile):
+class ProbeLedgerError(RuntimeError):
+    """Unsafe cleanup identity is terminal, not a credential propagation retry."""
+
+
+class ProbeLedger:
+    """Remember exact readiness objects before writes, across CLI retries."""
+    def __init__(self, args):
+        self.path = Path(args.probe_ledger) if getattr(args, "probe_ledger", None) else None
+        self.identity = {name: getattr(args, name, "") for name in
+                         ("profile", "cluster_id", "endpoint", "region", "data_bucket", "ops_bucket")}
+        self.objects = []
+        self.lock = None
+
+    def __enter__(self):
+        if self.path:
+            self.lock = os.open(str(self.path) + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+            fcntl.flock(self.lock, fcntl.LOCK_EX)
+            try:
+                if self.path.exists():
+                    try:
+                        record = json.loads(self.path.read_text())
+                    except (ValueError, OSError) as error:
+                        raise ProbeLedgerError("readiness cleanup ledger is unreadable") from error
+                    if not isinstance(record, dict):
+                        raise ProbeLedgerError("readiness cleanup ledger is not an object")
+                    if record.get("schema") != 1 or record.get("identity") != self.identity:
+                        raise ProbeLedgerError("readiness cleanup ledger describes a different storage identity")
+                    entries = record.get("objects")
+                    pattern = re.escape(key(self.identity["profile"], "preconditions")) + r"/[0-9a-f]{32}\.(bin|json)"
+                    if (not isinstance(entries, list) or any(not isinstance(entry, dict)
+                            or set(entry) != {"bucket", "key"}
+                            or entry["bucket"] not in (self.identity["data_bucket"], self.identity["ops_bucket"])
+                            or not isinstance(entry["key"], str) or not re.fullmatch(pattern, entry["key"])
+                            for entry in entries)):
+                        raise ProbeLedgerError("readiness cleanup ledger contains an invalid object identity")
+                    self.objects = entries
+            except Exception:
+                os.close(self.lock)
+                self.lock = None
+                raise
+        return self
+
+    def __exit__(self, *_):
+        if self.lock is not None:
+            os.close(self.lock)
+
+    def save(self):
+        if not self.path:
+            return
+        if self.objects:
+            fd, temporary = tempfile.mkstemp(prefix=".automq-probes-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    json.dump({"schema": 1, "identity": self.identity, "objects": self.objects}, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        elif self.path.exists():
+            self.path.unlink()
+        directory = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def remember(self, bucket, name):
+        entry = {"bucket": bucket, "key": name}
+        if entry not in self.objects:
+            self.objects.append(entry)
+            self.save()  # A write may land even when its response is lost.
+        return entry
+
+    def forget(self, entry):
+        if entry in self.objects:
+            self.objects.remove(entry)
+            self.save()
+
+    def cleanup(self, s3, entry):
+        if entry not in self.objects:
+            return
+        s3.delete_object(Bucket=entry["bucket"], Key=entry["key"])
+        _require_missing_probe(s3, entry["bucket"], entry["key"])
+        self.forget(entry)
+
+
+def _require_missing_probe(s3, bucket, name):
+    try:
+        response = s3.get_object(Bucket=bucket, Key=name)
+    except ClientError as error:
+        if error.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
+            return
+        raise
+    response["Body"].close()
+    raise RuntimeError("object storage returned an unexpected readiness object")
+
+
+def _probe_bucket_io(s3, bucket, profile, ledger):
     """Require authenticated missing reads and exact byte roundtrips per bucket."""
     k = key(profile, "preconditions", uuid.uuid4().hex + ".bin")
     payload = b"colors-storage-readiness\x00\xff\n" + uuid.uuid4().bytes
-
-    def require_missing():
-        try:
-            response = s3.get_object(Bucket=bucket, Key=k)
-        except ClientError as error:
-            if error.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
-                return
-            raise
-        response["Body"].close()
-        raise RuntimeError("object storage returned an unexpected readiness object")
-
     s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
-    require_missing()
-    created = False
+    _require_missing_probe(s3, bucket, k)
+    entry = ledger.remember(bucket, k)
     try:
         s3.put_object(Bucket=bucket, Key=k, Body=payload, ContentType="application/octet-stream")
-        created = True
         body = s3.get_object(Bucket=bucket, Key=k)["Body"]
         try:
             if body.read() != payload:
@@ -647,33 +738,37 @@ def _probe_bucket_io(s3, bucket, profile):
         finally:
             body.close()
     finally:
-        if created:
-            s3.delete_object(Bucket=bucket, Key=k)
-    require_missing()
+        ledger.cleanup(s3, entry)
 
 
 def cmd_preconditions(args):
-    """Prove both buckets' byte IO and the operations bucket's conditional writes."""
-    s3 = client(args.endpoint, args.region)
-    for bucket in (args.data_bucket, args.ops_bucket):
-        _probe_bucket_io(s3, bucket, args.profile)
-    k = key(args.profile, "preconditions", uuid.uuid4().hex + ".json")
-    created = False
-    try:
-        created = put_json(s3, args.ops_bucket, k, {"value": "first"}, if_absent=True)
-        if not created or put_json(s3, args.ops_bucket, k, {"value": "competitor"}, if_absent=True):
-            raise RuntimeError("object storage did not enforce conditional create")
-        etag = _etag(s3, args.ops_bucket, k)
-        if not _put_if_match(s3, args.ops_bucket, k, {"value": "second"}, etag):
-            raise RuntimeError("object storage rejected the current ETag")
-        if _put_if_match(s3, args.ops_bucket, k, {"value": "stale"}, etag):
-            raise RuntimeError("object storage did not enforce conditional replacement")
-        if get_json(s3, args.ops_bucket, k) != {"value": "second"}:
-            raise RuntimeError("conditional write changed the wrong value")
+    """Prove bucket IO and conditional writes only after prior probes are removed."""
+    with ProbeLedger(args) as ledger:
+        s3 = client(args.endpoint, args.region)
+        for entry in list(ledger.objects):
+            ledger.cleanup(s3, entry)
+        for bucket in (args.data_bucket, args.ops_bucket):
+            _probe_bucket_io(s3, bucket, args.profile, ledger)
+        k = key(args.profile, "preconditions", uuid.uuid4().hex + ".json")
+        _require_missing_probe(s3, args.ops_bucket, k)
+        entry = ledger.remember(args.ops_bucket, k)
+        try:
+            if not put_json(s3, args.ops_bucket, k, {"value": "first"}, if_absent=True):
+                # A known conditional-create rejection means we did not create it.
+                ledger.forget(entry)
+                raise RuntimeError("object storage rejected a fresh conditional create")
+            if put_json(s3, args.ops_bucket, k, {"value": "competitor"}, if_absent=True):
+                raise RuntimeError("object storage did not enforce conditional create")
+            etag = _etag(s3, args.ops_bucket, k)
+            if not _put_if_match(s3, args.ops_bucket, k, {"value": "second"}, etag):
+                raise RuntimeError("object storage rejected the current ETag")
+            if _put_if_match(s3, args.ops_bucket, k, {"value": "stale"}, etag):
+                raise RuntimeError("object storage did not enforce conditional replacement")
+            if get_json(s3, args.ops_bucket, k) != {"value": "second"}:
+                raise RuntimeError("conditional write changed the wrong value")
+        finally:
+            ledger.cleanup(s3, entry)
         print("both bucket byte roundtrips, missing reads, conditional create and replacement verified")
-    finally:
-        if created:
-            s3.delete_object(Bucket=args.ops_bucket, Key=k)
 
 
 def main():
@@ -686,7 +781,9 @@ def main():
     p.add_argument("--ops-bucket", default="")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("preconditions").set_defaults(fn=cmd_preconditions)
+    ready = sub.add_parser("preconditions")
+    ready.add_argument("--probe-ledger", default="/var/lib/automq/precondition-probes.json")
+    ready.set_defaults(fn=cmd_preconditions)
     sub.add_parser("adopt").set_defaults(fn=cmd_adopt)
     sub.add_parser("ready").set_defaults(fn=cmd_ready)
     sub.add_parser("genesis-state").set_defaults(fn=cmd_genesis_state)
@@ -725,7 +822,10 @@ def main():
     s.set_defaults(fn=cmd_lease_release)
 
     args = p.parse_args()
-    args.fn(args)
+    try:
+        args.fn(args)
+    except ProbeLedgerError as error:
+        die(str(error), 2)
 
 
 if __name__ == "__main__":
