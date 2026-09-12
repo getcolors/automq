@@ -52,7 +52,7 @@
     (let [automq (lib-coord "AUTOMQ_LIB_ROOT" automq-git-url automq-sha "green")
           green (lib-coord "GREEN_LIB_ROOT" green-git-url nil nil)
           once (lib-coord "ONCE_LIB_ROOT" once-git-url nil "green")
-          compute (lib-coord "COLORS_COMPUTE_LIB_ROOT" "https://github.com/getcolors/colors-compute.git" "58ac766d17cc1b174992986c1088d9d7045e13b5" "green")]
+          compute (lib-coord "COLORS_COMPUTE_LIB_ROOT" "https://github.com/getcolors/colors-compute.git" "ae28ea74962bb1897fa6365c143c1d43ac1fe095" "green")]
       (if-not automq
         (str "this launcher carries no automq pin.\n"
              "It has not been stamped by `bb pin`, which cannot run until the "

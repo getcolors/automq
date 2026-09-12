@@ -5,7 +5,7 @@
     "": {
       "name": "package-automq-red-dev",
       "dependencies": {
-        "colors-compute-red": "github:getcolors/colors-compute#58ac766d17cc1b174992986c1088d9d7045e13b5",
+        "colors-compute-red": "github:getcolors/colors-compute#ae28ea74962bb1897fa6365c143c1d43ac1fe095",
         "package-once-red": "github:getcolors/once#10e525ae7c37130ab4d532b91c8d2ead94557cc8",
         "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
       },
@@ -62,7 +62,7 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
-    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#58ac766", { "dependencies": { "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e" } }, "getcolors-colors-compute-58ac766", "sha512-KwW3Tr52jUc2GBG/+ahvf0rH16wrN09kDMYzVsQwMKKfPfWYcd6p7nG4kDjtgUShOZajZwSG/qw+OTi27+9MKw=="],
+    "colors-compute-red": ["colors-compute-red@github:getcolors/colors-compute#ae28ea7", { "peerDependencies": { "red": "*" } }, "getcolors-colors-compute-ae28ea7", "sha512-AKgS7dS07pGgS2O7OhJfAu6MS0/xxJTx/WIxyfGORXbySJEI10ySThyqPYWWJu9SRcgzdFCw0DpkIVm3mWlInQ=="],
 
     "package-once-red": ["package-once-red@github:getcolors/once#10e525a", { "peerDependencies": { "red": "*" }, "optionalPeers": ["red"] }, "getcolors-once-10e525a", "sha512-7MNd1LFMFwWtMN99/cyv04BEYJcYgVUXGLZUfxxdW4iNX2dweJxaoLYuP87B71+ZmKcR36lASDeZS+ucW24Gzg=="],
 
@@ -73,7 +73,5 @@
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 
     "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
-
-    "colors-compute-red/red": ["red@github:getcolors/red#db9bfe6", { "dependencies": { "zod": "^4.0.0" } }, "getcolors-red-db9bfe6", "sha512-3uHKgJeICb/ljQxiTzLTLUdFNfNqvzPGv08X4LRVOU5uk7wmT7wEuVag/xhj87Qn6tvCtAG8uDp8IbIROBGmmg=="],
   }
 }
