@@ -31,7 +31,10 @@ def integration():
     ip('-N', 'InstanceServices')
     ip('-A', 'OUTPUT', '-d', '169.254.0.0/16', '-j', 'InstanceServices')
     ip('-A', 'InstanceServices', '-p', 'tcp', '--dport', '3260', '-m', 'owner', '--uid-owner', '0', '-j', 'ACCEPT')
+    ip('-A', 'InstanceServices', '-d', '169.254.169.254/32', '-p', 'udp', '--dport', '123', '-j', 'ACCEPT')
     baseline = subprocess.check_output(['iptables-save', '-t', 'filter'], text=True)
+    # OCI's retained image file omits the UDP module that iptables canonicalizes.
+    baseline = baseline.replace('-p udp -m udp --dport', '-p udp --dport')
     ip('-N', 'DOCKER')
     ip('-A', 'FORWARD', '-j', 'DOCKER')
     original_input = ip('-S', 'INPUT').splitlines()
@@ -59,7 +62,10 @@ def integration():
         ip('-D', 'INPUT', '-j', 'REJECT', '--reject-with', 'icmp-host-prohibited')
         before_docker = ip('-S', 'DOCKER')
         assert firewall.restore_platform(path)
+        stable = ip('-S')
         assert not firewall.restore_platform(path)
+        assert not firewall.restore_platform(path)
+        assert ip('-S') == stable
         assert ip('-S', 'DOCKER') == before_docker
         assert preserved == {chain: ip('-S', chain) for chain in preserved}
         assert '--dport 9093' in ip('-S', first['chain'])
@@ -99,6 +105,19 @@ class Firewall(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'foreign chain'):
                     firewall.restore_platform(path)
                 command.assert_not_called()
+
+    def test_platform_check_error_does_not_append(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rules.v4'
+            path.write_text('*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n'
+                            ':OUTPUT ACCEPT [0:0]\n:InstanceServices - [0:0]\n'
+                            '-A InstanceServices -p udp --dport 123 -j ACCEPT\nCOMMIT\n')
+            with patch.object(firewall, 'command', return_value='-N InstanceServices\n') as command, \
+                    patch.object(firewall.subprocess, 'run', return_value=SimpleNamespace(returncode=2)):
+                with self.assertRaisesRegex(RuntimeError, 'existence check failed'):
+                    firewall.restore_platform(path)
+                command.assert_called_once_with(['-S'])
 
     def test_real_iptables_in_isolated_namespace(self):
         if not all(shutil.which(name) for name in ('sudo', 'unshare', 'iptables')):

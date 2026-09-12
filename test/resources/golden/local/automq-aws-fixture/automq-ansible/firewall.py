@@ -91,9 +91,13 @@ def restore_platform(path):
         command(['-N', 'InstanceServices'])
         changed = True
     for rule in rules:
-        if rule not in listed:
+        check = subprocess.run(['iptables', '--wait', '10', '-C', *rule[1:]],
+                               capture_output=True, text=True, timeout=30)
+        if check.returncode == 1:
             command(rule)
             changed = True
+        elif check.returncode != 0:
+            raise RuntimeError('OCI platform firewall existence check failed')
     return changed
 
 
