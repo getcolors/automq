@@ -47,6 +47,14 @@
         regexp: '(?m)^URIs: [^\n]+(?=\nSuites: [^\n]*-security(?:[ \t]|$))'
         replace: 'URIs: <{ automq-apt-security-mirror }>'
 
+<% endif %><% if automq-compute-oci %>    - name: Preserve OCI platform firewall files during package installation
+      ansible.builtin.debconf:
+        name: iptables-persistent
+        question: "{{ item }}"
+        value: "false"
+        vtype: boolean
+      loop: [iptables-persistent/autosave_v4, iptables-persistent/autosave_v6]
+
 <% endif %>    - name: Install base packages
       ansible.builtin.apt:
         name:
@@ -55,14 +63,18 @@
           - openssl
           - python3
 <% if automq-storage-oci %>          - python3-cryptography
-<% endif %>          - ufw
+<% endif %><% if automq-compute-oci %>          - iptables-persistent
+<% else %>          - ufw
+<% endif %>
           # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
           # PEP 668, and a managed package is one fewer thing to break on an
           # unattended upgrade.
           - python3-boto3
         state: present
         update_cache: true
-      retries: 3
+<% if automq-compute-oci %>        # Installing native persistence must not restore tables over live Docker.
+        policy_rc_d: 101
+<% endif %>      retries: 3
       delay: 10
       register: apt_base
       until: apt_base is succeeded
@@ -103,7 +115,13 @@
         - { path: /var/lib/automq, mode: "0755" }
         - { path: /var/lib/automq/metadata, mode: "0755" }
 
-<% if automq-compute-oci %>    # OCI Ubuntu rejects INPUT before UFW, which is inactive. Preserve its
+<% if automq-compute-oci %>    - name: Enable native OCI firewall restoration on boot
+      ansible.builtin.systemd_service:
+        name: netfilter-persistent.service
+        daemon_reload: true
+        enabled: true
+
+    # OCI Ubuntu rejects INPUT before UFW, which is inactive. Preserve its
     # platform/iSCSI and Docker rules; apply one scoped chain ahead of INPUT.
     - name: Install the OCI firewall helper
       ansible.builtin.copy:

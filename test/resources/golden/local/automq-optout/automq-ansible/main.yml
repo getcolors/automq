@@ -47,6 +47,7 @@
           - openssl
           - python3
           - ufw
+
           # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
           # PEP 668, and a managed package is one fewer thing to break on an
           # unattended upgrade.

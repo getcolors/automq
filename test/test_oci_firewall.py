@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ def integration():
     ip('-N', 'InstanceServices')
     ip('-A', 'OUTPUT', '-d', '169.254.0.0/16', '-j', 'InstanceServices')
     ip('-A', 'InstanceServices', '-p', 'tcp', '--dport', '3260', '-m', 'owner', '--uid-owner', '0', '-j', 'ACCEPT')
+    baseline = subprocess.check_output(['iptables-save', '-t', 'filter'], text=True)
     ip('-N', 'DOCKER')
     ip('-A', 'FORWARD', '-j', 'DOCKER')
     original_input = ip('-S', 'INPUT').splitlines()
@@ -48,6 +50,19 @@ def integration():
     assert firewall.apply(private_only)['rules'] == 6
     assert '--dport 9092' not in ip('-S', first['chain'])
     assert preserved == {chain: ip('-S', chain) for chain in preserved}
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / 'rules.v4'
+        path.write_text(baseline)
+        ip('-D', 'OUTPUT', '-d', '169.254.0.0/16', '-j', 'InstanceServices')
+        ip('-F', 'InstanceServices')  # Simulate reboot loss only in this isolated namespace.
+        ip('-X', 'InstanceServices')
+        ip('-D', 'INPUT', '-j', 'REJECT', '--reject-with', 'icmp-host-prohibited')
+        before_docker = ip('-S', 'DOCKER')
+        assert firewall.restore_platform(path)
+        assert not firewall.restore_platform(path)
+        assert ip('-S', 'DOCKER') == before_docker
+        assert preserved == {chain: ip('-S', chain) for chain in preserved}
+        assert '--dport 9093' in ip('-S', first['chain'])
     print(json.dumps({'passed': True, 'real_iptables': True, 'idempotent': True,
                       'platform_and_docker_preserved': True, 'source_tightening': True}))
 
@@ -75,6 +90,15 @@ class Firewall(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'foreign rule'):
                 firewall.apply(CONFIG)
             command.assert_called_once_with(['-S'])
+
+    def test_foreign_platform_baseline_refuses_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rules.v4'
+            path.write_text('*filter\n:DOCKER - [0:0]\nCOMMIT\n')
+            with patch.object(firewall, 'command') as command:
+                with self.assertRaisesRegex(ValueError, 'foreign chain'):
+                    firewall.restore_platform(path)
+                command.assert_not_called()
 
     def test_real_iptables_in_isolated_namespace(self):
         if not all(shutil.which(name) for name in ('sudo', 'unshare', 'iptables')):

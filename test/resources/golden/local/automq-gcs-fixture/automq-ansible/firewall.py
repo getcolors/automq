@@ -64,6 +64,39 @@ def owned_rule(tokens, owner):
     return (str(ipaddress.IPv4Network(values.get('-s', '0.0.0.0/0'))), str(ipaddress.IPv4Network(values['-d'])), int(values['--dport']))
 
 
+def restore_platform(path):
+    """Restore missing native rules from the retained image file, never live-save."""
+    lines = [shlex.split(line) for line in Path(path).read_text().splitlines()
+             if line.strip() and not line.lstrip().startswith('#')]
+    allowed = {'INPUT', 'FORWARD', 'OUTPUT', 'InstanceServices'}
+    if not lines or lines[0] != ['*filter'] or lines[-1] != ['COMMIT']:
+        raise ValueError('unsupported OCI platform firewall baseline')
+    rules = []
+    chains = set()
+    for line in lines[1:-1]:
+        if line[0].startswith(':'):
+            chain = line[0][1:]
+            if chain not in allowed or len(line) != 3:
+                raise ValueError('foreign chain in OCI platform baseline')
+            chains.add(chain)
+        elif line[:1] == ['-A'] and len(line) > 3 and line[1] in allowed:
+            rules.append(line)
+        else:
+            raise ValueError('unsupported rule in OCI platform baseline')
+    if chains != allowed or not any(line[:2] == ['-A', 'InstanceServices'] for line in rules):
+        raise ValueError('incomplete OCI platform firewall baseline')
+    listed = [shlex.split(line) for line in command(['-S']).splitlines()]
+    changed = False
+    if ['-N', 'InstanceServices'] not in listed:
+        command(['-N', 'InstanceServices'])
+        changed = True
+    for rule in rules:
+        if rule not in listed:
+            command(rule)
+            changed = True
+    return changed
+
+
 def apply(config):
     profile, rules = desired(config)
     chain = 'AUTOMQ_' + hashlib.sha256(profile.encode()).hexdigest()[:16].upper()
@@ -110,7 +143,10 @@ if __name__ == '__main__':
         profile, _ = desired(config)
         with open('/run/lock/automq-firewall-' + profile + '.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            print(json.dumps(apply(config), sort_keys=True))
+            platform_changed = restore_platform('/etc/iptables/rules.v4')
+            result = apply(config)
+            result['changed'] = result['changed'] or platform_changed
+            print(json.dumps(result, sort_keys=True))
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print('OCI firewall refused: ' + str(error), file=sys.stderr)
         sys.exit(1)

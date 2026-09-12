@@ -41,6 +41,14 @@
 
     # ---------------------------------------------------------------- host
 
+    - name: Preserve OCI platform firewall files during package installation
+      ansible.builtin.debconf:
+        name: iptables-persistent
+        question: "{{ item }}"
+        value: "false"
+        vtype: boolean
+      loop: [iptables-persistent/autosave_v4, iptables-persistent/autosave_v6]
+
     - name: Install base packages
       ansible.builtin.apt:
         name:
@@ -49,13 +57,16 @@
           - openssl
           - python3
           - python3-cryptography
-          - ufw
+          - iptables-persistent
+
           # boto3 from the distribution rather than pip: Ubuntu 24.04 enforces
           # PEP 668, and a managed package is one fewer thing to break on an
           # unattended upgrade.
           - python3-boto3
         state: present
         update_cache: true
+        # Installing native persistence must not restore tables over live Docker.
+        policy_rc_d: 101
       retries: 3
       delay: 10
       register: apt_base
@@ -96,6 +107,12 @@
         - { path: /etc/automq/tls, mode: "0700" }
         - { path: /var/lib/automq, mode: "0755" }
         - { path: /var/lib/automq/metadata, mode: "0755" }
+
+    - name: Enable native OCI firewall restoration on boot
+      ansible.builtin.systemd_service:
+        name: netfilter-persistent.service
+        daemon_reload: true
+        enabled: true
 
     # OCI Ubuntu rejects INPUT before UFW, which is inactive. Preserve its
     # platform/iSCSI and Docker rules; apply one scoped chain ahead of INPUT.

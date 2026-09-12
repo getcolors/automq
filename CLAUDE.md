@@ -243,3 +243,12 @@ Never add one tag without the other.
 ## Git
 
 Work on the current branch. Do not commit or push unless explicitly authorized.
+
+On OCI Ubuntu, installing `ufw` removes `iptables-persistent` and
+`netfilter-persistent`; the unchanged live rules then disappear at reboot.
+Keep native persistence, disable package autosave and service autostart during
+installation, and enable restoration for the next boot. The scoped helper
+restores missing native rules from the retained `/etc/iptables/rules.v4` before
+applying its own chain. It never flushes Docker tables or saves runtime rules
+over that platform baseline. Verify the InstanceServices OUTPUT rules after a
+real reboot as well as the application ports.

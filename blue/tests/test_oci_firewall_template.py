@@ -25,6 +25,14 @@ def test_rendered_oci_firewall_intent_uses_peers_and_configured_sources(tree, tm
                    'kafka-port': 9092, 'controller-port': 9093, 'internal-port': 9094})
     play = yaml.safe_load(html.unescape(render(source, values, PRESERVE_JINJA_DELIMITERS)))[0]
     assert not any(task['name'] == 'Open the cluster ports in the host firewall' for task in play['tasks'])
+    preserve = next(task for task in play['tasks'] if task['name'] == 'Preserve OCI platform firewall files during package installation')
+    assert preserve['ansible.builtin.debconf']['value'] == 'false'
+    assert set(preserve['loop']) == {'iptables-persistent/autosave_v4', 'iptables-persistent/autosave_v6'}
+    packages = next(task['ansible.builtin.apt'] for task in play['tasks'] if task['name'] == 'Install base packages')
+    assert 'iptables-persistent' in packages['name'] and 'ufw' not in packages['name']
+    assert packages['policy_rc_d'] == 101
+    restore = next(task['ansible.builtin.systemd_service'] for task in play['tasks'] if task['name'] == 'Enable native OCI firewall restoration on boot')
+    assert restore['enabled'] is True and 'state' not in restore
     intent = next(task for task in play['tasks'] if task['name'] == 'Write the OCI firewall intent')
     intent['ansible.builtin.copy']['dest'] = str(tmp_path / '{{ inventory_hostname }}.json')
     hosts = {f'node{i}': {'ansible_connection': 'local', 'automq_vpc_ip': f'10.42.0.{i+1}'} for i in range(3)}
