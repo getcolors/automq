@@ -134,4 +134,25 @@ grep -q "rev = \"$once_sha\"" "$root/blue/pyproject.toml" || fail 'blue/pyprojec
 grep -q "getcolors/once#$once_sha" "$root/skills/package-automq-red/red" || fail 'red payload PINS ONCE pin differs from green'
 ok 'the ONCE pin agrees in green, red, blue, and the red payload'
 
+# colors-compute-red declares the Red SDK as a peer, so a cold launcher cache
+# installs the SDK only because PINS names it. The pin must be the one
+# red/package.json tests against, and a cold cache must actually resolve it.
+red_sdk_sha=$(grep -oE '"red": "github:getcolors/red#[0-9a-f]{40}"' "$root/red/package.json" | grep -oE '[0-9a-f]{40}')
+[ -n "$red_sdk_sha" ] || fail 'red/package.json carries no Red SDK pin'
+grep -q "\"red\": \"github:getcolors/red#$red_sdk_sha\"" "$root/skills/package-automq-red/red" || fail 'red payload PINS the Red SDK at a different commit than red/package.json'
+ok 'the red payload PINS the Red SDK at the red/package.json commit'
+# One retry: a cold install fetches GitHub tarballs and a transient fetch
+# failure is not a payload defect. Each attempt starts from empty caches.
+cold=$(mktemp -d)
+cp "$root/skills/package-automq-red/red" "$cold/red"; chmod +x "$cold/red"
+cp "$root/test/fixtures/colors.yml" "$cold/colors.yml"
+cold_ok=0
+for attempt in 1 2; do
+  rm -rf "$cold/xdg" "$cold/bun" "$cold/.colors"
+  if (cd "$cold" && XDG_CACHE_HOME="$cold/xdg" BUN_INSTALL_CACHE_DIR="$cold/bun" ./red build >"$cold/build.log" 2>&1); then cold_ok=1; break; fi
+done
+[ "$cold_ok" = 1 ] || { tail -5 "$cold/build.log" >&2; rm -rf "$cold"; fail 'red payload does not build from a cold cache'; }
+rm -rf "$cold"
+ok 'red payload builds from a cold cache with only its PINS'
+
 echo "launcher: $checks checks passed"
