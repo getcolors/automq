@@ -39,7 +39,10 @@ signed by the scoped application's lifecycle-owned API key. The compute
 library also uses native OCI conditional writes for ownership journals.
 Before genesis, the OCI storage gate proves conditional create and native
 replacement, including stale ETag rejection. It waits at most 900 seconds for
-new credentials to propagate. See
+new credentials to propagate. The gate also proves missing-object reads and
+exact-byte writes, reads and deletes in both application buckets. OCI hosts
+use a persistent, scoped native INPUT chain ahead of the platform reject;
+UFW remains inactive. See
 [the OCI configuration contract](references/configuration.md#managed-oci-object-storage)
 before changing credentials, endpoints or lease behavior. The deployment
 evidence distinguishes storage checks from broker acceptance. The live OCI

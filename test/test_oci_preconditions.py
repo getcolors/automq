@@ -72,5 +72,77 @@ class OciPreconditions(unittest.TestCase):
             request.assert_not_called()
 
 
+class BucketReadiness(unittest.TestCase):
+    def modules(self):
+        root = Path(__file__).resolve().parents[1]
+        for relative in ('green/src/resources/io/github/getcolors/automq/tools/ansible/store.py',
+                         'red/resources/tools/ansible/store.py',
+                         'blue/src/package_automq_blue/resources/tools/ansible/store.py'):
+            module_spec = importlib.util.spec_from_file_location('readiness_store', root / relative)
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+            yield module
+
+    def fake(self, module, fault=None):
+        objects, calls = {}, []
+        def error(code):
+            return module.ClientError({'Error': {'Code': code, 'Message': 'test response'}}, 'GetObject')
+        def listing(**kwargs):
+            calls.append(('list', kwargs['Bucket']))
+            return {}
+        def get(**kwargs):
+            bucket, name = kwargs['Bucket'], kwargs['Key']
+            calls.append(('get', bucket))
+            if fault == ('missing', bucket) and (bucket, name) not in objects:
+                raise error('SignatureDoesNotMatch')
+            if fault == ('read', bucket) and (bucket, name) in objects:
+                raise error('SignatureDoesNotMatch')
+            if (bucket, name) not in objects:
+                raise error('NoSuchKey')
+            return {'Body': io.BytesIO(b'corrupt' if fault == ('bytes', bucket) else objects[bucket, name])}
+        def put(**kwargs):
+            calls.append(('put', kwargs['Bucket']))
+            self.assertIsInstance(kwargs['Body'], bytes)
+            self.assertIn(b'\x00\xff', kwargs['Body'])
+            objects[kwargs['Bucket'], kwargs['Key']] = kwargs['Body']
+        def delete(**kwargs):
+            bucket = kwargs['Bucket']
+            calls.append(('delete', bucket))
+            if fault != ('delete', bucket):
+                objects.pop((bucket, kwargs['Key']), None)
+        return SimpleNamespace(list_objects_v2=listing, get_object=get, put_object=put, delete_object=delete), objects, calls
+
+    def test_both_buckets_must_complete_missing_read_and_byte_roundtrip_before_cas(self):
+        for module in self.modules():
+            s3, objects, calls = self.fake(module)
+            args = SimpleNamespace(endpoint='unused', region='unused', profile='demo', data_bucket='data', ops_bucket='ops')
+            with patch.object(module, 'client', return_value=s3), \
+                 patch.object(module, 'put_json', side_effect=[True, False]) as create, \
+                 patch.object(module, '_etag', return_value='current'), \
+                 patch.object(module, '_put_if_match', side_effect=[True, False]), \
+                 patch.object(module, 'get_json', return_value={'value': 'second'}), \
+                 patch('sys.stdout', new_callable=io.StringIO):
+                module.cmd_preconditions(args)
+                self.assertEqual(create.call_count, 2)
+            expected = [(op, bucket) for bucket in ('data', 'ops') for op in ('list', 'get', 'put', 'get', 'delete', 'get')]
+            self.assertEqual(calls[:12], expected)
+            self.assertEqual(objects, {})
+
+    def test_failed_missing_reads_positive_reads_bytes_or_delete_refuse_before_cas(self):
+        for module in self.modules():
+            for operation in ('missing', 'read', 'bytes', 'delete'):
+                for bucket in ('data', 'ops'):
+                    with self.subTest(operation=operation, bucket=bucket):
+                        s3, objects, calls = self.fake(module, (operation, bucket))
+                        args = SimpleNamespace(endpoint='unused', region='unused', profile='demo', data_bucket='data', ops_bucket='ops')
+                        with patch.object(module, 'client', return_value=s3), patch.object(module, 'put_json') as cas:
+                            with self.assertRaises((module.ClientError, RuntimeError)):
+                                module.cmd_preconditions(args)
+                            cas.assert_not_called()
+                        if operation in ('read', 'bytes'):
+                            self.assertIn(('delete', bucket), calls)
+                            self.assertEqual(objects, {})
+
+
 if __name__ == '__main__':
     unittest.main()

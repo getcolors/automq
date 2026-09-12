@@ -25,6 +25,8 @@ import ansibleMain from "../resources/tools/ansible/main.yml" with { type: "text
 import ansibleCleanup from "../resources/tools/ansible/cleanup.yml" with { type: "text" };
 import ansibleCompose from "../resources/tools/ansible/compose.yml" with { type: "text" };
 import ansibleServerProperties from "../resources/tools/ansible/server.properties" with { type: "text" };
+import ansibleFirewall from "../resources/tools/ansible/firewall.py" with { type: "text" };
+import ansibleFirewallService from "../resources/tools/ansible/firewall.service" with { type: "text" };
 import ansibleStore from "../resources/tools/ansible/store.py" with { type: "text" };
 import ansibleSecrets from "../resources/tools/ansible/secrets.sh" with { type: "text" };
 import ansibleRenderConfig from "../resources/tools/ansible/render-config.sh" with { type: "text" };
@@ -257,6 +259,8 @@ export function ansibleData(opts: Opts): Opts {
     ...opts,
     "ssh-keygen": validate.keygen(opts) || Boolean(opts["ssh-private-key-path"]),
     "automq-storage-oci": opts["automq-storage-provider"] === "oci",
+    "automq-compute-oci": opts["provider-compute"] === "oci",
+    "firewall-kafka-sources": cluster.requirements(opts).security.ingress.filter((rule:any) => rule.id === "kafka").flatMap((rule:any) => rule.sources),
     "node-count": cluster.nodeCount(opts),
     "quorum-voters": cluster.quorumVoters(opts, list),
     "certificate-names": names,
@@ -285,6 +289,8 @@ export const ansibleFiles: Array<[string, string]> = [
   ["compose.yml", ansibleCompose],
   ["server.properties", ansibleServerProperties],
   ["store.py", ansibleStore],
+  ["firewall.py", ansibleFirewall],
+  ["firewall.service", ansibleFirewallService],
   ["secrets.sh", ansibleSecrets],
   ["render-config.sh", ansibleRenderConfig],
   ["format.sh", ansibleFormat],

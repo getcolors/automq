@@ -212,6 +212,8 @@
         certificate-names (if (= "none" (:provider-dns opts)) (mapv :ip nodes*) (cluster/certificate-names opts))]
     (assoc (dissoc opts :automq/storage-credentials)
            :automq-storage-oci (= "oci" (:automq-storage-provider opts))
+           :automq-compute-oci (= "oci" (:provider-compute opts))
+           :firewall-kafka-sources (vec (mapcat :sources (filter #(= "kafka" (:id %)) (get-in (cluster/requirements opts) [:security :ingress]))))
            :ssh-keygen (or (validate/keygen? opts) (boolean (:ssh-private-key-path opts)))
            :node-count (cluster/node-count opts)
            :quorum-voters (cluster/quorum-voters opts nodes*)
@@ -237,7 +239,7 @@
 
 (def ansible-files
   ["ansible.cfg" "main.yml" "cleanup.yml" "compose.yml" "server.properties"
-   "store.py" "secrets.sh" "render-config.sh" "format.sh" "acl.sh" "scram.sh"
+   "store.py" "firewall.py" "firewall.service" "secrets.sh" "render-config.sh" "format.sh" "acl.sh" "scram.sh"
    "cert.sh" "cert-deploy.sh" "cert-deploy.service" "cert-deploy.timer"
    "cert-renew.service" "cert-renew.timer"
    "status.sh" "credential.sh" "smoke.sh" "rotate.sh"])

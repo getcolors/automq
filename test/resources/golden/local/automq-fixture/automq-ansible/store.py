@@ -619,11 +619,44 @@ def cmd_lease_release(args):
     print(json.dumps({"released": released}))
 
 
+def _probe_bucket_io(s3, bucket, profile):
+    """Require authenticated missing reads and exact byte roundtrips per bucket."""
+    k = key(profile, "preconditions", uuid.uuid4().hex + ".bin")
+    payload = b"colors-storage-readiness\x00\xff\n" + uuid.uuid4().bytes
+
+    def require_missing():
+        try:
+            response = s3.get_object(Bucket=bucket, Key=k)
+        except ClientError as error:
+            if error.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
+                return
+            raise
+        response["Body"].close()
+        raise RuntimeError("object storage returned an unexpected readiness object")
+
+    s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+    require_missing()
+    created = False
+    try:
+        s3.put_object(Bucket=bucket, Key=k, Body=payload, ContentType="application/octet-stream")
+        created = True
+        body = s3.get_object(Bucket=bucket, Key=k)["Body"]
+        try:
+            if body.read() != payload:
+                raise RuntimeError("object storage readiness bytes did not match")
+        finally:
+            body.close()
+    finally:
+        if created:
+            s3.delete_object(Bucket=bucket, Key=k)
+    require_missing()
+
+
 def cmd_preconditions(args):
-    """Wait for scoped credentials and prove both kinds of conditional write."""
+    """Prove both buckets' byte IO and the operations bucket's conditional writes."""
     s3 = client(args.endpoint, args.region)
     for bucket in (args.data_bucket, args.ops_bucket):
-        s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
+        _probe_bucket_io(s3, bucket, args.profile)
     k = key(args.profile, "preconditions", uuid.uuid4().hex + ".json")
     created = False
     try:
@@ -637,7 +670,7 @@ def cmd_preconditions(args):
             raise RuntimeError("object storage did not enforce conditional replacement")
         if get_json(s3, args.ops_bucket, k) != {"value": "second"}:
             raise RuntimeError("conditional write changed the wrong value")
-        print("conditional create and replacement verified")
+        print("both bucket byte roundtrips, missing reads, conditional create and replacement verified")
     finally:
         if created:
             s3.delete_object(Bucket=args.ops_bucket, Key=k)

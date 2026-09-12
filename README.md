@@ -92,6 +92,12 @@ Docker and lego use the host architecture, `amd64` or `arm64`; unsupported
 architectures fail before installation. The AutoMQ image pin must contain
 the selected platform.
 
+OCI Ubuntu host rules use a deployment-owned INPUT chain ahead of the
+platform reject rule. Kafka follows its configured source CIDRs; controller
+and internal ports admit only cluster peer addresses. A systemd unit restores
+these rules after netfilter-persistent and before Docker starts. The package
+preserves platform, iSCSI and Docker rules and does not enable UFW on OCI.
+
 OCI lease replacement uses native signed HEAD/PUT because the compatibility
 endpoint ignores PUT `If-Match`. An OCI-only gate proves conditional writes
 before genesis and waits up to 15 minutes for new credentials to propagate.

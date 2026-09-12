@@ -103,7 +103,48 @@
         - { path: /var/lib/automq, mode: "0755" }
         - { path: /var/lib/automq/metadata, mode: "0755" }
 
-    # There are TWO firewalls in front of these nodes and the package must own
+<% if automq-compute-oci %>    # OCI Ubuntu rejects INPUT before UFW, which is inactive. Preserve its
+    # platform/iSCSI and Docker rules; apply one scoped chain ahead of INPUT.
+    - name: Install the OCI firewall helper
+      ansible.builtin.copy:
+        src: firewall.py
+        dest: /usr/local/lib/automq-firewall.py
+        mode: "0755"
+
+    - name: Write the OCI firewall intent
+      ansible.builtin.copy:
+        dest: /etc/automq/firewall.json
+        mode: "0644"
+        content: >-
+          {{ {'profile': '<{ profile }>', 'private_host': automq_vpc_ip,
+              'peers': groups['automq'] | map('extract', hostvars, 'automq_vpc_ip') | list,
+              'kafka_sources': automq_firewall_sources, 'kafka_port': <{ kafka-port }>,
+              'internal_port': <{ internal-port }>, 'controller_port': <{ controller-port }>}
+             | to_nice_json }}
+      vars:
+        automq_firewall_sources:
+<% if firewall-kafka-sources %><% for source in firewall-kafka-sources %>          - "<{ source }>"
+<% endfor %><% else %>          []
+<% endif %>
+    - name: Install persistent OCI firewall service
+      ansible.builtin.copy:
+        src: firewall.service
+        dest: /etc/systemd/system/automq-firewall.service
+        mode: "0644"
+
+    - name: Enable OCI firewall before Docker on boot
+      ansible.builtin.systemd_service:
+        name: automq-firewall.service
+        daemon_reload: true
+        enabled: true
+
+    - name: Apply the scoped OCI host firewall
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /usr/local/lib/automq-firewall.py, /etc/automq/firewall.json]
+      register: oci_firewall
+      changed_when: (oci_firewall.stdout | from_json).changed
+
+<% else %>    # There are TWO firewalls in front of these nodes and the package must own
     # both. Vultr's firewall group is desired state in the compute stage; ufw
     # ships ENABLED on the Vultr Ubuntu image with `default deny (incoming)`
     # and a single 22/tcp rule. It passes ICMP, so every node pings every other
@@ -131,7 +172,7 @@
       register: ufw_result
       changed_when: "'CHANGED' in ufw_result.stdout"
 
-    - name: Install the object-store helper and the operator commands
+<% endif %>    - name: Install the object-store helper and the operator commands
       ansible.builtin.copy:
         src: "{{ item.src }}"
         dest: "{{ item.dest }}"

@@ -74,6 +74,10 @@ the pinned tag** when bumping `automq-image`.
   in the compute stage; ufw is converged by the play. Both are required, and
   the provider group alone proves nothing because the host drops the packet
   after it gets through. Test raw TCP across the VPC, never ping.
+- **OCI Ubuntu has a native INPUT reject even when UFW is inactive.** The OCI
+  path installs a scoped owned chain before that reject. Preserve OUTPUT,
+  InstanceServices and Docker rules. Its boot unit runs after platform firewall
+  restoration and before Docker; prove persistence with a reboot and TCP tests.
 - **A marker is not evidence.** Genesis is decided by whether any node has a
   **format-complete** record, never by a marker written before the format. An
   earlier design claimed the marker first; the converge that followed failed,

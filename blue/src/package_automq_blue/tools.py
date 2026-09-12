@@ -238,6 +238,8 @@ def ansible_data(opts: dict) -> dict:
     names = [node["ip"] for node in nodes_] if opts.get("provider-dns") == "none" else cluster.certificate_names(opts)
     return {**opts,
             "automq-storage-oci": opts.get("automq-storage-provider") == "oci",
+            "automq-compute-oci": opts.get("provider-compute") == "oci",
+            "firewall-kafka-sources": [source for rule in cluster.requirements(opts)["security"]["ingress"] if rule["id"] == "kafka" for source in rule["sources"]],
             "ssh-keygen": validate.keygen(opts) or bool(opts.get("ssh-private-key-path")),
             "node-count": cluster.node_count(opts),
             "quorum-voters": cluster.quorum_voters(opts, nodes_),
@@ -261,7 +263,7 @@ def ansible_data(opts: dict) -> dict:
 
 ANSIBLE_FILES = [
     "ansible.cfg", "main.yml", "cleanup.yml", "compose.yml", "server.properties",
-    "store.py", "secrets.sh", "render-config.sh", "format.sh", "acl.sh", "scram.sh",
+    "store.py", "firewall.py", "firewall.service", "secrets.sh", "render-config.sh", "format.sh", "acl.sh", "scram.sh",
     "cert.sh", "cert-deploy.sh", "cert-deploy.service", "cert-deploy.timer",
     "cert-renew.service", "cert-renew.timer",
     "status.sh", "credential.sh", "smoke.sh", "rotate.sh",

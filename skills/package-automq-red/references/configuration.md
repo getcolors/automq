@@ -188,6 +188,19 @@ Use `oci-tenancy-id`, `oci-compartment-id`, `oci-namespace`,
 `oci-config-file-profile`, `automq-oci-user-email`, and the OCI region in
 `automq-r2-region`. The service user needs an email unique within the tenancy.
 Identity Domains rejected creation without a primary email in the live test.
+
+OCI Ubuntu images reject inbound traffic in native iptables even when UFW is
+inactive. The package installs an owned INPUT chain before that reject:
+Kafka uses its configured source CIDRs, and internal/controller ports accept
+only the cluster peers. A boot unit restores the chain after the platform
+firewall and before Docker. It preserves existing platform, iSCSI and Docker
+rules and does not enable UFW. See [Oracle's platform image firewall guidance](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm).
+
+New OCI credentials must pass listing, missing-object GET and exact-byte
+PUT/GET/DELETE probes against both application buckets before conditional
+writes are tested. A successful listing alone did not prove GetObject was
+ready in the live run. Authentication failures retry only inside the bounded
+pre-genesis readiness gate; ownership and genesis refusals remain failures.
 The endpoint is `https://<namespace>.compat.objectstorage.<region>.oraclecloud.com`.
 Set `oci-home-region` when the tenancy home region differs, and `oci-auth:
 SecurityToken` for a session profile. API key authentication is the default.

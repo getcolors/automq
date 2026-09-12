@@ -1,0 +1,12 @@
+[Unit]
+Description=AutoMQ scoped OCI host firewall
+After=netfilter-persistent.service network-pre.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/automq-firewall.py /etc/automq/firewall.json
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
