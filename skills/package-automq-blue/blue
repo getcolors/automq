@@ -4,7 +4,7 @@
 # dependencies = ["package-automq-blue", "blue"]
 #
 # [tool.uv.sources]
-# package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "ace2f656236741df3d92a6319599e27fd7dbd11f", subdirectory = "blue" }
+# package-automq-blue = { git = "https://github.com/getcolors/automq.git", rev = "0bbeb50765ee73fc79b97c1418162eb6da8b7c19", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 #
 # [tool.uv]
