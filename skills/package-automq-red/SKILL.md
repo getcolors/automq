@@ -44,12 +44,29 @@ exact-byte writes, reads and deletes in both application buckets. OCI hosts
 use a persistent, scoped native INPUT chain ahead of the platform reject;
 UFW remains inactive. See
 [the OCI configuration contract](references/configuration.md#managed-oci-object-storage)
-before changing credentials, endpoints or lease behavior. The deployment
-evidence distinguishes storage checks from broker acceptance. The live OCI
-storage stage passed data and ops object roundtrips, denied access to the
-existing state bucket, and passed lease takeover and stale-release checks.
-VM launches failed with regional capacity and shape errors, so the OCI run
-has not passed broker acceptance.
+before changing credentials, endpoints or lease behavior.
+
+On 2026-09-12, three OCI `VM.Standard.A1.Flex` ARM brokers (1 OCPU and 8 GB
+RAM each, across three Frankfurt availability domains) completed three full
+converges: two on source `5aac5a3` and one on final source `6b76c01`. Each passed
+all 16 public checks; the final run also captured all 9 host gates and unchanged
+firewall application on all three hosts. IP-SAN TLS, public records,
+authentication and ACL denials passed. An abrupt kill of the selected partition
+leader recovered writes in 11, 11 and 10 seconds respectively and retained the
+pre-fault records and
+committed consumer offsets. The offsets topic's leader was not forced onto the
+victim, so this is not proof of offsets-leader recovery. Scoped application
+credentials were denied access to the existing state bucket; native CAS and
+lease checks passed. A real reboot preserved the repaired OCI platform and
+application firewall rules. Final audits retained all 50 independent records,
+node identities, secrets and CA hashes across the converges and reboots. Six
+final helper calls made no changes, and each host retained one native NTP rule.
+
+The 2026-09-11 account could not launch VMs because of capacity and shape
+errors; its storage and partial-deployment cleanup evidence remains historical.
+Cleanup of the fully running September 12 cluster has not been repeated.
+See the [dated deployment evidence](https://github.com/getcolors/automq-oci/tree/ee2789daa1738b33563488b9294940179234ea09/evidence/2026-09-12)
+for the tested scope and retained failures.
 
 The default TLS mode uses Cloudflare DNS-only records and ACME. Node 0 issues
 one Let's Encrypt certificate covering every broker name and the bootstrap
