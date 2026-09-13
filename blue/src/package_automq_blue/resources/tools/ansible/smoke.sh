@@ -76,7 +76,13 @@ gate "500 records produced and consumed back exactly"
 # writing to local disk and every gate above would still pass.
 for role in data ops; do
   bucket=$([ "$role" = data ] && echo "<{ automq-data-r2-bucket }>" || echo "<{ automq-ops-r2-bucket }>")
-  n=$(python3 - "$bucket" <<'PY'
+  # Data objects exist once the round trip above committed, but ops telemetry
+  # is exported on an interval and can land minutes after the brokers answer.
+  # Poll with a bound rather than read once: a fresh cluster failed this gate
+  # at 35 seconds with 36 data objects and an ops bucket that filled shortly after.
+  n=0
+  for attempt in $(seq 1 24); do
+    n=$(python3 - "$bucket" <<'PY'
 import os, sys, boto3
 from botocore.config import Config
 s3 = boto3.client("s3", endpoint_url="<{ automq-r2-endpoint }>", region_name="<{ automq-r2-region }>",
@@ -91,7 +97,10 @@ for page in s3.get_paginator("list_objects_v2").paginate(Bucket=sys.argv[1]):
 print(seen)
 PY
 )
-  [ "${n:-0}" -gt 0 ] || fail "$bucket holds no AutoMQ objects: the storage tier is not R2"
+    [ "${n:-0}" -gt 0 ] && break
+    sleep 15
+  done
+  [ "${n:-0}" -gt 0 ] || fail "$bucket holds no AutoMQ objects after six minutes: the storage tier is not R2"
   gate "$bucket holds $n AutoMQ objects"
 done
 
